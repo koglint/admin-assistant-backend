@@ -4,6 +4,7 @@ from flask_cors import CORS, cross_origin
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, firestore
+import io
 
 
 # Initialize Flask
@@ -34,10 +35,23 @@ def upload():
         return jsonify({"status": "error", "message": "No selected file"}), 400
 
     try:
-        # ✅ 2. Use xlrd to read legacy .xls file
-        df = pd.read_excel(file, engine='xlrd')
+        # Read file into memory to allow multiple attempts
+        in_memory_file = io.BytesIO(file.read())
+
+        try:
+            # Try openpyxl (best for modern .xlsx files, even if misnamed)
+            df = pd.read_excel(in_memory_file, engine='openpyxl')
+        except Exception as e_openpyxl:
+            in_memory_file.seek(0)  # Reset for retry
+            try:
+                # Fallback to xlrd (for actual .xls files)
+                df = pd.read_excel(in_memory_file, engine='xlrd')
+            except Exception as e_xlrd:
+                raise ValueError(f"openpyxl error: {e_openpyxl}; xlrd error: {e_xlrd}")
+
     except Exception as e:
         return jsonify({"status": "error", "message": f"Excel read failed: {str(e)}"}), 500
+
 
     try:
         # ✅ 3. Filter truants: late + absent/unjustified

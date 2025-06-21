@@ -5,5 +5,7 @@ firebase-admin
 gunicorn
 flask-cors
 xlrd==1.2.0
+openpyxl
+
 
 
