@@ -5,6 +5,7 @@ import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, firestore
 import io
+import traceback
 
 
 # Initialize Flask
@@ -50,6 +51,7 @@ def upload():
                 raise ValueError(f"openpyxl error: {e_openpyxl}; xlrd error: {e_xlrd}")
 
     except Exception as e:
+        traceback.print_exc()
         return jsonify({"status": "error", "message": f"Excel read failed: {str(e)}"}), 500
 
 
@@ -88,6 +90,7 @@ def upload():
         })
     
     except Exception as e:
+        traceback.print_exc()
         return jsonify({"status": "error", "message": f"Firestore update failed: {str(e)}"}), 500
 
 
