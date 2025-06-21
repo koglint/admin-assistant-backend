@@ -1,0 +1,5 @@
+flask
+pandas
+xlrd
+firebase-admin
+gunicorn
