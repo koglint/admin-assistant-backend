@@ -3,3 +3,5 @@ pandas
 xlrd
 firebase-admin
 gunicorn
+flask-cors
+

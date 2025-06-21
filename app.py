@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
+
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -6,6 +8,7 @@ from firebase_admin import credentials, firestore
 
 # Initialize Flask
 app = Flask(__name__)
+CORS(app, origins=["https://koglint.github.io"]) # Adjust the origin as needed 
 
 # Firebase Admin SDK setup
 import os, json
