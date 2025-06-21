@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 
 import pandas as pd
 import firebase_admin
@@ -23,38 +23,57 @@ def home():
     return "Admin Assistant Flask backend is live!"
 
 @app.route('/upload', methods=['POST'])
+@cross_origin(origins=["https://koglint.github.io"])
 def upload():
+    # ✅ 1. Ensure a file was uploaded
+    if 'file' not in request.files:
+        return jsonify({"status": "error", "message": "No file part"}), 400
+
     file = request.files['file']
-    df = pd.read_excel(file, engine='xlrd')
+    if file.filename == '':
+        return jsonify({"status": "error", "message": "No selected file"}), 400
 
-    # Filter truants (late + Absent or Unjustified)
-    df['Comment'] = df['Comment'].astype(str).str.lower()
-    df['Description'] = df['Description'].astype(str).str.lower()
-    truants = df[
-        (df['Comment'] == 'late') &
-        (df['Description'].isin(['absent', 'unjustified']))
-    ]
+    try:
+        # ✅ 2. Use xlrd to read legacy .xls file
+        df = pd.read_excel(file, engine='xlrd')
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Excel read failed: {str(e)}"}), 500
 
-    # Update Firestore
-    for _, row in truants.iterrows():
-        student_id = str(row['Student ID'])
-        name = f"{row['Given Name(s)']} {row['Surname']}"
-        roll_class = row['Roll Class']
+    try:
+        # ✅ 3. Filter truants: late + absent/unjustified
+        df['Comment'] = df['Comment'].astype(str).str.lower()
+        df['Description'] = df['Description'].astype(str).str.lower()
+        truants = df[
+            (df['Comment'] == 'late') &
+            (df['Description'].isin(['absent', 'unjustified']))
+        ]
 
-        doc_ref = db.collection('students').document(student_id)
-        doc = doc_ref.get()
-        if doc.exists:
-            doc_ref.update({
-                'truancyCount': firestore.Increment(1)
-            })
-        else:
-            doc_ref.set({
-                'fullName': name,
-                'rollClass': roll_class,
-                'truancyCount': 1,
-                'detentionsServed': 0,
-                'notes': ''
-            })
+        # ✅ 4. Update Firestore
+        for _, row in truants.iterrows():
+            student_id = str(row['Student ID'])
+            name = f"{row['Given Name(s)']} {row['Surname']}"
+            roll_class = row['Roll Class']
 
-    return jsonify({"status": "success", "updated": len(truants)})
+            doc_ref = db.collection('students').document(student_id)
+            doc = doc_ref.get()
+            if doc.exists:
+                doc_ref.update({'truancyCount': firestore.Increment(1)})
+            else:
+                doc_ref.set({
+                    'fullName': name,
+                    'rollClass': roll_class,
+                    'truancyCount': 1,
+                    'detentionsServed': 0,
+                    'notes': ''
+                })
+
+        return jsonify({
+            "status": "success",
+            "updated": len(truants),
+            "exampleNames": truants["Given Name(s)"].head(3).tolist()
+        })
+    
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Firestore update failed: {str(e)}"}), 500
+
 
