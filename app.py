@@ -10,7 +10,8 @@ import traceback
 
 # Initialize Flask
 app = Flask(__name__)
-CORS(app, origins=["https://koglint.github.io"]) # Adjust the origin as needed 
+CORS(app, resources={r"/*": {"origins": "https://koglint.github.io"}})
+
 
 # Firebase Admin SDK setup
 import os, json
@@ -25,7 +26,6 @@ def home():
     return "Admin Assistant Flask backend is live!"
 
 @app.route('/upload', methods=['POST'])
-@cross_origin(origins=["https://koglint.github.io"])
 def upload():
     # ✅ 1. Ensure a file was uploaded
     if 'file' not in request.files:
