@@ -11,6 +11,7 @@ import traceback
 # Initialize Flask
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "https://koglint.github.io"}})
+app.config['CORS_HEADERS'] = 'Content-Type'
 
 
 # Firebase Admin SDK setup
@@ -94,3 +95,7 @@ def upload():
         return jsonify({"status": "error", "message": f"Firestore update failed: {str(e)}"}), 500
 
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    traceback.print_exc()
+    return jsonify({"status": "error", "message": str(e)}), 500
