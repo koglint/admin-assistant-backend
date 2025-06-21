@@ -7,7 +7,10 @@ from firebase_admin import credentials, firestore
 app = Flask(__name__)
 
 # Firebase Admin SDK setup
-cred = credentials.Certificate("firebase-key.json")  # 🔒 secure later
+import os, json
+cred_dict = json.loads(os.environ['FIREBASE_KEY_JSON'])
+cred = credentials.Certificate(cred_dict)
+
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
