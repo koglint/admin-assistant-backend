@@ -7,7 +7,7 @@ from firebase_admin import credentials, firestore
 import io
 import traceback
 import os, json
-from datetime import datetime
+from datetime import datetime, time
 
 # Initialize Flask
 app = Flask(__name__)
@@ -65,13 +65,28 @@ def upload():
                 reason = row.get('Description', 'unspecified')
                 comment = row.get('Comment', '')
 
+                arrival_time_str = row.get('Time', '')
+                try:
+                    arrival_time = pd.to_datetime(arrival_time_str).time() if arrival_time_str else None
+                    scheduled_time = time(8, 35)
+                    if arrival_time:
+                        minutes_late = (datetime.combine(datetime.today(), arrival_time) - datetime.combine(datetime.today(), scheduled_time)).total_seconds() // 60
+                        minutes_late = max(0, int(minutes_late))
+                    else:
+                        minutes_late = None
+                except:
+                    arrival_time = None
+                    minutes_late = None
+
                 truancy_record = {
                     'date': date,
                     'reason': reason,
                     'comment': comment,
                     'resolved': False,
                     'justified': False,
-                    'detentionIssued': False
+                    'detentionIssued': False,
+                    'arrivalTime': arrival_time_str,
+                    'minutesLate': minutes_late
                 }
 
                 doc_ref = db.collection('students').document(student_id)
