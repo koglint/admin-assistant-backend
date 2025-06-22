@@ -65,17 +65,21 @@ def upload():
                 reason = row.get('Description', 'unspecified')
                 comment = row.get('Comment', '')
 
-                arrival_time_str = row.get('Time', '')
+                time_range = str(row.get('Time', ''))
+                arrival_time_str = None
+                minutes_late = None
                 try:
-                    arrival_time = pd.to_datetime(arrival_time_str).time() if arrival_time_str else None
-                    scheduled_time = time(8, 35)
-                    if arrival_time:
+                    if '-' in time_range:
+                        arrival_part = time_range.split('-')[-1].strip()
+                        arrival_dt = pd.to_datetime(arrival_part)
+                        arrival_time_str = arrival_dt.strftime('%H:%M')
+
+                        scheduled_time = time(8, 35)
+                        arrival_time = arrival_dt.time()
                         minutes_late = (datetime.combine(datetime.today(), arrival_time) - datetime.combine(datetime.today(), scheduled_time)).total_seconds() // 60
                         minutes_late = max(0, int(minutes_late))
-                    else:
-                        minutes_late = None
                 except:
-                    arrival_time = None
+                    arrival_time_str = None
                     minutes_late = None
 
                 truancy_record = {
