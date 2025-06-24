@@ -50,37 +50,37 @@ def upload():
     try:
         df['Comment'] = df.get('Comment', '').astype(str).str.lower()
         df['Description'] = df.get('Description', '').astype(str).str.lower()
+        df['date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
 
         added = 0
+        batch = db.batch()
+        batch_size = 0
+        max_batch_size = 500
+
+        existing_students = {doc.id: doc.to_dict() for doc in db.collection('students').stream()}
+
         for _, row in df.iterrows():
             try:
                 student_id = str(row['Student ID'])
                 name = f"{row['Given Name(s)']} {row['Surname']}"
                 roll_class = row['Roll Class']
-                date_str = row.get('Date', '')
-                if date_str:
-                    date = pd.to_datetime(date_str).strftime('%Y-%m-%d')
-                else:
-                    date = datetime.today().strftime('%Y-%m-%d')
+                date = row['date'] if pd.notna(row['date']) else datetime.today().strftime('%Y-%m-%d')
                 reason = row.get('Description', 'unspecified')
                 comment = row.get('Comment', '')
 
                 time_range = str(row.get('Time', ''))
                 arrival_time_str = None
                 minutes_late = None
-                try:
-                    if '-' in time_range:
-                        arrival_part = time_range.split('-')[-1].strip()
-                        arrival_dt = pd.to_datetime(arrival_part)
-                        arrival_time_str = arrival_dt.strftime('%H:%M')
 
+                if '-' in time_range:
+                    arrival_part = time_range.split('-')[-1].strip()
+                    arrival_dt = pd.to_datetime(arrival_part, errors='coerce')
+                    if pd.notna(arrival_dt):
+                        arrival_time_str = arrival_dt.strftime('%H:%M')
                         scheduled_time = time(8, 35)
                         arrival_time = arrival_dt.time()
                         minutes_late = (datetime.combine(datetime.today(), arrival_time) - datetime.combine(datetime.today(), scheduled_time)).total_seconds() // 60
                         minutes_late = max(0, int(minutes_late))
-                except:
-                    arrival_time_str = None
-                    minutes_late = None
 
                 truancy_record = {
                     'date': date,
@@ -94,22 +94,21 @@ def upload():
                 }
 
                 doc_ref = db.collection('students').document(student_id)
-                doc = doc_ref.get()
+                existing_doc = existing_students.get(student_id)
 
-                if doc.exists:
-                    doc_data = doc.to_dict()
-                    existing = doc_data.get('truancies', [])
+                if existing_doc:
+                    existing = existing_doc.get('truancies', [])
                     if not any(t['date'] == date and t['reason'] == reason for t in existing):
                         existing.append(truancy_record)
                         unresolved_count = sum(1 for t in existing if not t['resolved'] and not t['justified'])
-                        doc_ref.update({
+                        batch.update(doc_ref, {
                             'truancies': existing,
                             'truancyCount': len(existing),
                             'unresolvedDetentions': unresolved_count
                         })
                         added += 1
                 else:
-                    doc_ref.set({
+                    batch.set(doc_ref, {
                         'fullName': name,
                         'rollClass': roll_class,
                         'truancyCount': 1,
@@ -120,9 +119,18 @@ def upload():
                     })
                     added += 1
 
+                batch_size += 1
+                if batch_size >= max_batch_size:
+                    batch.commit()
+                    batch = db.batch()
+                    batch_size = 0
+
             except Exception as student_error:
                 traceback.print_exc()
                 continue
+
+        if batch_size > 0:
+            batch.commit()
 
         return jsonify({"status": "success", "added": added})
 
