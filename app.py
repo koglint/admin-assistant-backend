@@ -68,7 +68,7 @@ def upload():
                 name = f"{row['Given Name(s)']} {row['Surname']}"
                 roll_class = row['Roll Class']
                 date = row['date'] if pd.notna(row['date']) else datetime.today().strftime('%Y-%m-%d')
-                reason = row.get('Description', 'unspecified')
+                description = row.get('Description', 'unspecified')
                 comment = row.get('Comment', '')
                 explainer = row['Explainer'].strip()
                 explainer_source = row['Explainer Source'].strip()
@@ -93,7 +93,7 @@ def upload():
 
                 truancy_record = {
                     'date': date,
-                    'reason': reason,
+                    'description': description,
                     'comment': comment,
                     'justified': False,
                     'explainer': explainer,
@@ -108,7 +108,7 @@ def upload():
 
                 if existing_doc:
                     existing = existing_doc.get('truancies', [])
-                    if not any(t['date'] == date and t['reason'] == reason for t in existing):
+                    if not any(t['date'] == date and t['description'] == description for t in existing):
                         existing.append(truancy_record)
                         existing.sort(key=lambda x: x['date'], reverse=True)
                         latest_truancy_date = existing[0]['date']
