@@ -51,8 +51,9 @@ def upload():
         df['Comment'] = df.get('Comment', '').astype(str).str.lower()
         df['Description'] = df.get('Description', '').astype(str).str.lower()
         df['date'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
-        df['Explainer'] = df.get('Explainer', '').astype(str).fillna('')
-        df['Explainer Source'] = df.get('Explainer Source', '').astype(str).fillna('')
+        df['Explainer'] = df.get('Explainer', '').fillna('').astype(str)
+        df['Explainer Source'] = df.get('Explainer Source', '').fillna('').astype(str)
+
 
         added = 0
         batch = db.batch()
@@ -69,8 +70,9 @@ def upload():
                 date = row['date'] if pd.notna(row['date']) else datetime.today().strftime('%Y-%m-%d')
                 reason = row.get('Description', 'unspecified')
                 comment = row.get('Comment', '')
-                explainer = str(row.get('Explainer', '')).strip()
-                explainer_source = str(row.get('Explainer Source', '')).strip()
+                explainer = row['Explainer'].strip()
+                explainer_source = row['Explainer Source'].strip()
+
 
 
                 time_range = str(row.get('Time', ''))
