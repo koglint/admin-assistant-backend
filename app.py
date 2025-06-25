@@ -86,7 +86,6 @@ def upload():
                     'date': date,
                     'reason': reason,
                     'comment': comment,
-                    'resolved': False,
                     'justified': False,
                     'detentionIssued': False,
                     'arrivalTime': arrival_time_str,
@@ -100,11 +99,15 @@ def upload():
                     existing = existing_doc.get('truancies', [])
                     if not any(t['date'] == date and t['reason'] == reason for t in existing):
                         existing.append(truancy_record)
-                        unresolved_count = sum(1 for t in existing if not t['resolved'] and not t['justified'])
+                        existing.sort(key=lambda x: x['date'], reverse=True)
+                        latest_truancy_date = existing[0]['date']
+                        last_served_date = existing_doc.get('lastDetentionServedDate')
+                        truancy_resolved = last_served_date and last_served_date >= latest_truancy_date
+
                         batch.update(doc_ref, {
                             'truancies': existing,
                             'truancyCount': len(existing),
-                            'unresolvedDetentions': unresolved_count
+                            'truancyResolved': truancy_resolved
                         })
                         added += 1
                 else:
@@ -112,7 +115,7 @@ def upload():
                         'fullName': name,
                         'rollClass': roll_class,
                         'truancyCount': 1,
-                        'unresolvedDetentions': 1,
+                        'truancyResolved': False,
                         'truancies': [truancy_record],
                         'detentionsServed': 0,
                         'notes': ''
@@ -137,6 +140,7 @@ def upload():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": f"Firestore update failed: {str(e)}"}), 500
+
 
 @app.errorhandler(Exception)
 def handle_exception(e):
