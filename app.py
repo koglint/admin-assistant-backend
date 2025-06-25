@@ -67,6 +67,9 @@ def upload():
                 date = row['date'] if pd.notna(row['date']) else datetime.today().strftime('%Y-%m-%d')
                 reason = row.get('Description', 'unspecified')
                 comment = row.get('Comment', '')
+                explainer = row.get('Explainer', '')
+                explainer_source = row.get('Explainer Source', '')
+
 
                 time_range = str(row.get('Time', ''))
                 arrival_time_str = None
@@ -87,6 +90,8 @@ def upload():
                     'reason': reason,
                     'comment': comment,
                     'justified': False,
+                    'explainer': explainer,
+                    'explainerSource': explainer_source,
                     'detentionIssued': False,
                     'arrivalTime': arrival_time_str,
                     'minutesLate': minutes_late
