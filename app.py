@@ -69,6 +69,10 @@ def upload():
                 roll_class = row['Roll Class']
                 date = row['date'] if pd.notna(row['date']) else datetime.today().strftime('%Y-%m-%d')
                 description = row.get('Description', 'unspecified')
+                # Determine if the truancy is justified based on keywords in description
+                justified_keywords = ['School Business', 'Leave', 'Justified']                              # Add more keywords as needed
+                is_justified = any(kw in description.lower() for kw in justified_keywords)
+
                 comment = row.get('Comment', '')
                 explainer = row['Explainer'].strip()
                 explainer_source = row['Explainer Source'].strip()
@@ -95,7 +99,7 @@ def upload():
                     'date': date,
                     'description': description,
                     'comment': comment,
-                    'justified': False,
+                    'justified': is_justified,
                     'explainer': explainer,
                     'explainerSource': explainer_source,
                     'detentionIssued': False,
