@@ -117,7 +117,10 @@ def upload():
                         existing.sort(key=lambda x: x['date'], reverse=True)
                         latest_truancy_date = existing[0]['date']
                         last_served_date = existing_doc.get('lastDetentionServedDate')
-                        truancy_resolved = last_served_date and last_served_date >= latest_truancy_date
+                        truancy_resolved = False
+                        if last_served_date:
+                            truancy_resolved = last_served_date >= latest_truancy_date
+
 
                         batch.update(doc_ref, {
                             'truancies': existing,
