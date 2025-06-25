@@ -65,7 +65,9 @@ def upload():
         for _, row in df.iterrows():
             try:
                 student_id = str(row['Student ID'])
-                name = f"{row['Given Name(s)']} {row['Surname']}"
+                givenName = row['Given Name(s)']
+                surname = row['Surname']
+
                 roll_class = row['Roll Class']
                 date = row['date'] if pd.notna(row['date']) else datetime.today().strftime('%Y-%m-%d')
                 description = row.get('Description', 'unspecified')
@@ -130,7 +132,8 @@ def upload():
                         added += 1
                 else:
                     batch.set(doc_ref, {
-                        'fullName': name,
+                        'givenName': givenName,
+                        'surname': surname,
                         'rollClass': roll_class,
                         'truancyCount': 1,
                         'truancyResolved': False,
