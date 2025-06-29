@@ -120,7 +120,8 @@ def upload():
 
                 if existing_doc:
                     existing = existing_doc.get('truancies', [])
-                    if not any(t['date'] == date and t['description'] == description for t in existing):
+                    if not any(pd.to_datetime(t['date']).strftime('%Y-%m-%d') == date for t in existing):
+
                         existing.append(truancy_record)
                         existing.sort(key=lambda x: x['date'], reverse=True)
                         latest_truancy_date = existing[0]['date']
