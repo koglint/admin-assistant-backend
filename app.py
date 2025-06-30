@@ -146,7 +146,8 @@ def upload():
                         'truancyResolved': False,
                         'truancies': [truancy_record],
                         'detentionsServed': 0,
-                        'notes': ''
+                        'notes': '',
+                        'escalated': False,
                     })
                     added += 1
 
