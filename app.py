@@ -108,6 +108,7 @@ def upload():
                     'description': description,
                     'comment': comment,
                     'justified': is_justified,
+                    'resolved': False,
                     'explainer': explainer,
                     'explainerSource': explainer_source,
                     'detentionIssued': False,
