@@ -1,13 +1,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-import pandas as pd
-import firebase_admin
-from firebase_admin import credentials, firestore
 import io
+import json
+import os
 import traceback
-import os, json
 from datetime import datetime, time
+
+import firebase_admin
+import pandas as pd
+from firebase_admin import auth as firebase_auth
+from firebase_admin import credentials, firestore
 
 # Initialize Flask
 app = Flask(__name__)
@@ -20,9 +23,18 @@ cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
+ALLOWED_ADMIN_EMAILS = {
+    "troy.koglin1@det.nsw.edu.au",
+    "troy.koglin1@education.nsw.gov.au"
+}
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+ADMIN_PURGE_ENABLED = os.environ.get("ADMIN_PURGE_ENABLED", "false").lower() == "true"
+
+
 @app.route('/')
 def home():
     return "Admin Assistant Flask backend is live!"
+
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -54,38 +66,31 @@ def upload():
         df['Explainer'] = df.get('Explainer', '').fillna('').astype(str)
         df['Explainer Source'] = df.get('Explainer Source', '').fillna('').astype(str)
 
-
         added = 0
         batch = db.batch()
         batch_size = 0
         max_batch_size = 500
 
-        existing_students = {doc.id: doc.to_dict() for doc in db.collection('students').stream()}
+        existing_students = {student_doc.id: student_doc.to_dict() for student_doc in db.collection('students').stream()}
 
         for _, row in df.iterrows():
             try:
                 student_id = str(row['Student ID'])
-                givenName = row['Given Name(s)']
+                given_name = row['Given Name(s)']
                 surname = row['Surname']
-
                 roll_class = row['Roll Class']
                 date = row['date'] if pd.notna(row['date']) else datetime.today().strftime('%Y-%m-%d')
                 description = row.get('Description', 'unspecified').lower()
 
-                # Filter: Only process if 'absent' or 'unjustified' is in description
-                if not ('absent' in description or 'unjustified' in description): #add more key words as needed
-                    continue  # Skip this row
+                if not ('absent' in description or 'unjustified' in description):
+                    continue
 
-                # Determine if the truancy is justified based on keywords
                 justified_keywords = ['school business', 'leave', 'justified']
-                is_justified = any(kw in description for kw in justified_keywords)
-
+                is_justified = any(keyword in description for keyword in justified_keywords)
 
                 comment = row.get('Comment', '')
                 explainer = row['Explainer'].strip()
                 explainer_source = row['Explainer Source'].strip()
-
-
 
                 time_range = str(row.get('Time', ''))
                 arrival_time_str = None
@@ -98,10 +103,11 @@ def upload():
                         arrival_time_str = arrival_dt.strftime('%H:%M')
                         scheduled_time = time(8, 35)
                         arrival_time = arrival_dt.time()
-                        minutes_late = (datetime.combine(datetime.today(), arrival_time) - datetime.combine(datetime.today(), scheduled_time)).total_seconds() // 60
+                        minutes_late = (
+                            datetime.combine(datetime.today(), arrival_time)
+                            - datetime.combine(datetime.today(), scheduled_time)
+                        ).total_seconds() // 60
                         minutes_late = max(0, int(minutes_late))
-               
-   
 
                 truancy_record = {
                     'date': date,
@@ -122,15 +128,11 @@ def upload():
                 if existing_doc:
                     existing = existing_doc.get('truancies', [])
                     if not any(pd.to_datetime(t['date']).strftime('%Y-%m-%d') == date for t in existing):
-
                         existing.append(truancy_record)
-                        existing.sort(key=lambda x: x['date'], reverse=True)
+                        existing.sort(key=lambda item: item['date'], reverse=True)
                         latest_truancy_date = existing[0]['date']
                         last_served_date = existing_doc.get('lastDetentionServedDate')
-                        truancy_resolved = False
-                        if last_served_date:
-                            truancy_resolved = last_served_date >= latest_truancy_date
-
+                        truancy_resolved = bool(last_served_date and last_served_date >= latest_truancy_date)
 
                         batch.update(doc_ref, {
                             'truancies': existing,
@@ -140,7 +142,7 @@ def upload():
                         added += 1
                 else:
                     batch.set(doc_ref, {
-                        'givenName': givenName,
+                        'givenName': given_name,
                         'surname': surname,
                         'rollClass': roll_class,
                         'truancyCount': 1,
@@ -158,7 +160,7 @@ def upload():
                     batch = db.batch()
                     batch_size = 0
 
-            except Exception as student_error:
+            except Exception:
                 traceback.print_exc()
                 continue
 
@@ -170,6 +172,102 @@ def upload():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": f"Firestore update failed: {str(e)}"}), 500
+
+
+@app.route('/admin/purge', methods=['POST'])
+def admin_purge():
+    payload, error_response = verify_admin_request(require_purge_enabled=True)
+    if error_response:
+        return error_response
+
+    confirmation = payload.get("confirmation", "")
+
+    if confirmation != "DELETE":
+        return jsonify({"status": "error", "message": "Deletion confirmation text was incorrect."}), 400
+
+    deleted = purge_all_students()
+    return jsonify({"status": "success", "deleted": deleted})
+
+
+@app.route('/admin/authorize', methods=['POST'])
+def admin_authorize():
+    _, error_response = verify_admin_request(require_purge_enabled=False)
+    if error_response:
+        return error_response
+
+    return jsonify({
+        "status": "success",
+        "message": "Admin access granted.",
+        "purgeEnabled": ADMIN_PURGE_ENABLED
+    })
+
+
+def extract_bearer_token(header_value):
+    if not header_value:
+        return None
+
+    parts = header_value.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+
+    return parts[1].strip()
+
+
+def verify_admin_request(require_purge_enabled):
+    if not ADMIN_PASSWORD:
+        return None, (jsonify({"status": "error", "message": "ADMIN_PASSWORD is not configured on the server."}), 500)
+
+    if require_purge_enabled and not ADMIN_PURGE_ENABLED:
+        return None, (jsonify({"status": "error", "message": "Purge is disabled on the server."}), 403)
+
+    token = extract_bearer_token(request.headers.get("Authorization"))
+    if not token:
+        return None, (jsonify({"status": "error", "message": "Missing authorization token."}), 401)
+
+    try:
+        decoded_token = firebase_auth.verify_id_token(token)
+    except Exception:
+        traceback.print_exc()
+        return None, (jsonify({"status": "error", "message": "Invalid authentication token."}), 401)
+
+    email = decoded_token.get("email", "").lower()
+    email_verified = decoded_token.get("email_verified", False)
+
+    if not email_verified:
+        return None, (jsonify({"status": "error", "message": "Email address is not verified."}), 403)
+
+    if email not in ALLOWED_ADMIN_EMAILS:
+        return None, (jsonify({"status": "error", "message": "This account is not allowed to use admin controls."}), 403)
+
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password", "")
+    if password != ADMIN_PASSWORD:
+        return None, (jsonify({"status": "error", "message": "Admin password was incorrect."}), 403)
+
+    return payload, None
+
+
+def purge_all_students():
+    students = list(db.collection('students').stream())
+    deleted = 0
+    batch = db.batch()
+    batch_size = 0
+    max_batch_size = 500
+
+    for student_doc in students:
+        batch.delete(student_doc.reference)
+        batch_size += 1
+        deleted += 1
+
+        if batch_size >= max_batch_size:
+            batch.commit()
+            batch = db.batch()
+            batch_size = 0
+
+    if batch_size > 0:
+        batch.commit()
+
+    return deleted
 
 
 @app.errorhandler(Exception)

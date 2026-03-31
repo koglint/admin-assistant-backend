@@ -10,6 +10,7 @@ The backend exposes a small API:
 
 - `GET /`
 - `POST /upload`
+- `POST /admin/purge`
 
 The service is responsible for:
 
@@ -18,6 +19,7 @@ The service is responsible for:
 - identifying rows that represent lateness or unjustified attendance issues
 - converting those rows into truancy records
 - creating or updating student documents in Firestore
+- securely performing the admin purge action on the server
 
 It does not render HTML templates or serve the frontend.
 
@@ -68,6 +70,8 @@ Current Render service definition:
 The service expects a Firebase service account JSON payload in the environment variable:
 
 - `FIREBASE_KEY_JSON`
+- `ADMIN_PASSWORD`
+- `ADMIN_PURGE_ENABLED`
 
 At startup, [`app.py`](./app.py) loads that JSON, creates a Firebase Admin credential, and opens a Firestore client.
 
@@ -81,6 +85,11 @@ db = firestore.client()
 ```
 
 If `FIREBASE_KEY_JSON` is missing or malformed, the app will fail on startup.
+
+Admin purge configuration:
+
+- `ADMIN_PASSWORD`: the backend-only admin password used by the protected purge endpoint
+- `ADMIN_PURGE_ENABLED`: set to `true` to allow purge, or `false` to lock it at the server
 
 ## CORS
 
@@ -128,6 +137,40 @@ Success response:
 {
   "status": "success",
   "added": 12
+}
+```
+
+### `POST /admin/purge`
+
+This endpoint performs a full delete of the `students` collection.
+
+It is intentionally protected by several checks:
+
+- the server must have `ADMIN_PURGE_ENABLED=true`
+- the server must have `ADMIN_PASSWORD` configured
+- the request must include a valid Firebase ID token in the `Authorization: Bearer <token>` header
+- the signed-in Firebase user must have a verified email
+- the email must be one of:
+  - `troy.koglin1@det.nsw.edu.au`
+  - `troy.koglin1@education.nsw.gov.au`
+- the request body must include the correct backend password
+- the request body must include `confirmation: "DELETE"`
+
+Example request body:
+
+```json
+{
+  "password": "your-admin-password",
+  "confirmation": "DELETE"
+}
+```
+
+Success response:
+
+```json
+{
+  "status": "success",
+  "deleted": 123
 }
 ```
 
@@ -282,8 +325,9 @@ To test locally:
 
 1. Start the Flask server.
 2. Make sure `FIREBASE_KEY_JSON` points to a service account with Firestore access.
-3. Point the frontend upload URL to your local backend if needed.
-4. Upload a real attendance export from the frontend or use a REST client.
+3. Set `ADMIN_PASSWORD` and `ADMIN_PURGE_ENABLED=true` if you want to test the admin purge locally.
+4. Point the frontend upload URL to your local backend if needed.
+5. Upload a real attendance export from the frontend or use a REST client.
 
 Example with `curl`:
 
@@ -304,10 +348,13 @@ curl -X POST http://127.0.0.1:5000/upload -F "file=@attendance.xlsx"
 - The CORS origin must match the deployed frontend domain.
 - Spreadsheet header changes are the most likely reason for parser breakage.
 - Firestore document shape changes should be coordinated with the frontend repo.
+- The secure purge endpoint is the only place that should delete all student records.
 
 ## Maintenance Checklist
 
 - Keep `requirements.txt` current and remove duplicates when cleaning dependencies.
 - Verify Render still has the correct `FIREBASE_KEY_JSON` secret after any environment changes.
+- Verify Render still has the correct `ADMIN_PASSWORD` and `ADMIN_PURGE_ENABLED` values after any admin-security changes.
 - Re-test an upload whenever the school attendance export format changes.
 - Re-test the frontend home page, detentions page, and reports page after any Firestore schema change.
+- Re-test the Admin page whenever auth, allowed emails, or backend domain settings change.
