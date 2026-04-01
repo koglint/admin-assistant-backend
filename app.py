@@ -28,9 +28,6 @@ ALLOWED_ADMIN_EMAILS = {
 }
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_PURGE_ENABLED = os.environ.get("ADMIN_PURGE_ENABLED", "false").lower() == "true"
-UPLOAD_TYPES = {"midday", "end_of_day"}
-
-
 @app.route("/")
 def home():
     return "Admin Assistant Flask backend is live!"
@@ -41,15 +38,9 @@ def upload():
     if "file" not in request.files:
         return jsonify({"status": "error", "message": "No file part"}), 400
 
-    upload_type = request.form.get("uploadType", "").strip().lower()
-    if upload_type not in UPLOAD_TYPES:
-        return jsonify({"status": "error", "message": "Upload type must be midday or end_of_day."}), 400
-
     uploaded_file = request.files["file"]
     if uploaded_file.filename == "":
         return jsonify({"status": "error", "message": "No selected file"}), 400
-
-    warning = get_upload_time_warning(upload_type)
 
     try:
         workbook = io.BytesIO(uploaded_file.read())
@@ -68,8 +59,12 @@ def upload():
     try:
         normalized_df = normalize_dataframe(df)
         report_rows = build_report_rows(normalized_df)
+        report_date = get_report_date(report_rows)
+        upload_row_count = len(report_rows)
+        upload_type, warning = infer_upload_type(report_date, upload_row_count)
         students_by_id = load_existing_students()
         summary = process_upload(report_rows, students_by_id, upload_type)
+        record_upload_type(report_date, upload_type, upload_row_count)
         if warning:
             summary["warning"] = warning
         return jsonify({"status": "success", **summary})
@@ -453,22 +448,68 @@ def get_report_date(report_rows):
     return dates[-1] if dates else None
 
 
-def get_upload_time_warning(upload_type):
+def infer_upload_type(report_date, upload_row_count):
     now = datetime.now(SYDNEY_TZ)
     current_minutes = now.hour * 60 + now.minute
+    tracking = load_upload_tracking(report_date)
+    last_upload_type = tracking.get("lastUploadType")
+    previous_row_count = tracking.get("lastRowCount")
 
-    if upload_type == "midday":
+    if last_upload_type == "midday":
+        warning = None
+        if previous_row_count is not None and upload_row_count < previous_row_count:
+            warning = "This upload is being treated as end-of-day, but it has fewer rows than the earlier upload for the same date."
+        elif current_minutes < 12 * 60:
+            warning = "A second upload for this date is being treated as end-of-day, but it is being uploaded earlier than usual."
+        return "end_of_day", warning
+
+    if last_upload_type == "end_of_day":
+        warning = "This date already appears to have an end-of-day upload, so this upload is also being treated as end-of-day."
+        if previous_row_count is not None and upload_row_count > previous_row_count:
+            warning = "This date already has an end-of-day upload recorded, but the new file has more rows than the previous upload."
+        return "end_of_day", warning
+
+    if current_minutes < 13 * 60:
+        inferred = "midday"
+    else:
+        inferred = "end_of_day"
+
+    warning = None
+    if inferred == "midday":
         expected_min = 10 * 60
         expected_max = 12 * 60 + 30
         if not (expected_min <= current_minutes <= expected_max):
-            return "This upload was marked as midday, but the upload time is outside the usual midday window."
+            warning = "This upload was inferred as midday, but the upload time is outside the usual midday window."
+        if previous_row_count is not None and upload_row_count > previous_row_count:
+            warning = "This upload was inferred as midday, but it has more rows than the previously recorded upload for this date."
     else:
         expected_min = 14 * 60
         expected_max = 18 * 60
         if not (expected_min <= current_minutes <= expected_max):
-            return "This upload was marked as end of day, but the upload time is outside the usual end-of-day window."
+            warning = "This upload was inferred as end-of-day, but the upload time is outside the usual end-of-day window."
+        if previous_row_count is not None and upload_row_count < previous_row_count:
+            warning = "This upload was inferred as end-of-day, but it has fewer rows than the previously recorded upload for this date."
 
-    return None
+    return inferred, warning
+
+
+def load_upload_tracking(report_date):
+    if not report_date:
+        return {}
+
+    snapshot = db.collection("uploadTracking").document(report_date).get()
+    return snapshot.to_dict() or {}
+
+
+def record_upload_type(report_date, upload_type, upload_row_count):
+    if not report_date:
+        return
+
+    db.collection("uploadTracking").document(report_date).set({
+        "lastUploadType": upload_type,
+        "lastRowCount": upload_row_count,
+        "updatedAt": datetime.now(SYDNEY_TZ).isoformat(),
+    }, merge=True)
 
 
 def verify_admin_request(require_purge_enabled):
