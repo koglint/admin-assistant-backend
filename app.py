@@ -103,6 +103,10 @@ def normalize_dataframe(df):
     normalized["Given Name(s)"] = normalized.get("Given Name(s)", "").fillna("").astype(str).str.strip()
     normalized["Surname"] = normalized.get("Surname", "").fillna("").astype(str).str.strip()
     normalized["Roll Class"] = normalized.get("Roll Class", "").fillna("").astype(str).str.strip()
+    year_series = normalized.get("School Year")
+    if year_series is None:
+        year_series = normalized.get("Year", "")
+    normalized["Year"] = year_series.fillna("").astype(str).str.strip()
     normalized["Shorthand"] = normalized.get("Shorthand", "").fillna("").astype(str).str.strip()
     normalized["Description"] = normalized.get("Description", "").fillna("").astype(str).str.strip()
     normalized["Time"] = normalized.get("Time", "").fillna("").astype(str).str.strip()
@@ -126,6 +130,7 @@ def build_report_rows(df):
             "givenName": row["Given Name(s)"],
             "surname": row["Surname"],
             "rollClass": row["Roll Class"],
+            "yearGroup": row["Year"],
             "date": date_string,
             "shorthand": row["Shorthand"],
             "description": row["Description"],
@@ -204,6 +209,15 @@ def process_upload(report_rows, students_by_id, report_context):
 def clone_student(existing_student, source_row=None):
     if existing_student:
         student = dict(existing_student)
+        if source_row:
+            if source_row.get("givenName"):
+                student["givenName"] = source_row.get("givenName", student.get("givenName", ""))
+            if source_row.get("surname"):
+                student["surname"] = source_row.get("surname", student.get("surname", ""))
+            if source_row.get("rollClass"):
+                student["rollClass"] = source_row.get("rollClass", student.get("rollClass", ""))
+            if source_row.get("yearGroup"):
+                student["yearGroup"] = source_row.get("yearGroup", student.get("yearGroup", ""))
         student["lateArrivals"] = list(existing_student.get("lateArrivals", existing_student.get("truancies", [])))
         student["truancies"] = list(student["lateArrivals"])
         student["detentionHistory"] = list(existing_student.get("detentionHistory", []))
@@ -229,6 +243,7 @@ def clone_student(existing_student, source_row=None):
         "givenName": source_row.get("givenName", "") if source_row else "",
         "surname": source_row.get("surname", "") if source_row else "",
         "rollClass": source_row.get("rollClass", "") if source_row else "",
+        "yearGroup": source_row.get("yearGroup", "") if source_row else "",
         "lateArrivals": [],
         "truancies": [],
         "lateCount": 0,
