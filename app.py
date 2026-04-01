@@ -103,9 +103,9 @@ def normalize_dataframe(df):
     normalized["Given Name(s)"] = normalized.get("Given Name(s)", "").fillna("").astype(str).str.strip()
     normalized["Surname"] = normalized.get("Surname", "").fillna("").astype(str).str.strip()
     normalized["Roll Class"] = normalized.get("Roll Class", "").fillna("").astype(str).str.strip()
-    year_series = normalized.get("School Year")
+    year_series = get_column_series(normalized, ["School Year", "Year"])
     if year_series is None:
-        year_series = normalized.get("Year", "")
+        year_series = ""
     normalized["Year"] = year_series.fillna("").astype(str).str.strip()
     normalized["Shorthand"] = normalized.get("Shorthand", "").fillna("").astype(str).str.strip()
     normalized["Description"] = normalized.get("Description", "").fillna("").astype(str).str.strip()
@@ -130,7 +130,7 @@ def build_report_rows(df):
             "givenName": row["Given Name(s)"],
             "surname": row["Surname"],
             "rollClass": row["Roll Class"],
-            "yearGroup": row["Year"],
+            "yearGroup": normalize_year_group_text(row["Year"]),
             "date": date_string,
             "shorthand": row["Shorthand"],
             "description": row["Description"],
@@ -287,6 +287,7 @@ def add_late_arrival(student, late_row):
         "minutesLate": minutes_late,
         "shorthand": late_row["shorthand"],
         "timeRange": late_row["timeRange"],
+        "yearGroup": late_row.get("yearGroup"),
     })
     existing_late_arrivals.sort(key=lambda item: item["date"], reverse=True)
 
@@ -440,6 +441,36 @@ def split_time_range(time_range):
 
 def normalize_time_text(value):
     return str(value or "").strip().replace(" ", "").upper()
+
+
+def normalize_year_group_text(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    if text.endswith(".0"):
+        text = text[:-2]
+
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits or text
+
+
+def get_column_series(df, column_names):
+    normalized_lookup = {
+        normalize_column_name(column): column
+        for column in df.columns
+    }
+
+    for candidate in column_names:
+        actual_name = normalized_lookup.get(normalize_column_name(candidate))
+        if actual_name is not None:
+            return df[actual_name]
+
+    return None
+
+
+def normalize_column_name(value):
+    return "".join(str(value or "").strip().lower().split())
 
 
 def parse_time_value(value):
