@@ -61,13 +61,9 @@ def upload():
         normalized_df = normalize_dataframe(df)
         report_rows = build_report_rows(normalized_df)
         report_date = get_report_date(report_rows)
-        upload_row_count = len(report_rows)
-        upload_type, warning = infer_upload_type(report_date, upload_row_count)
+        report_context = build_report_context(report_rows, report_date)
         students_by_id = load_existing_students()
-        summary = process_upload(report_rows, students_by_id, upload_type)
-        record_upload_type(report_date, upload_type, upload_row_count)
-        if warning:
-            summary["warning"] = warning
+        summary = process_upload(report_rows, students_by_id, report_context)
         return jsonify({"status": "success", **summary})
     except Exception as exc:
         traceback.print_exc()
@@ -150,48 +146,58 @@ def load_existing_students():
     }
 
 
-def process_upload(report_rows, students_by_id, upload_type):
-    latest_rows_by_student_date = {}
-    for row in report_rows:
-        latest_rows_by_student_date[(row["studentId"], row["date"])] = row
-
+def process_upload(report_rows, students_by_id, report_context):
+    report_date = report_context.get("reportDate")
     late_rows = [row for row in report_rows if is_roll_call_late(row)]
     grouped_absences = group_rows_by_student_and_date(report_rows)
 
     changed_students = {}
     new_late_count = 0
     detention_assigned_count = 0
+    detention_checks_completed = 0
 
     for late_row in late_rows:
         student_id = late_row["studentId"]
         student = changed_students.get(student_id) or clone_student(students_by_id.get(student_id), late_row)
 
-        if add_late_arrival(student, late_row, upload_type):
+        if add_late_arrival(student, late_row):
             new_late_count += 1
 
             if should_assign_detention(student):
-                scheduled_date = late_row["date"] if upload_type == "midday" else next_school_day(late_row["date"])
-                assign_detention(student, late_row, upload_type, scheduled_date)
+                scheduled_date = determine_detention_date(late_row)
+                assign_detention(student, late_row, scheduled_date)
                 detention_assigned_count += 1
 
         update_student_status(student)
         changed_students[student_id] = student
 
-    if upload_type == "end_of_day":
-        report_date = get_report_date(report_rows)
-        if report_date:
-            for student_id, existing_student in students_by_id.items():
-                student = changed_students.get(student_id) or clone_student(existing_student)
-                if evaluate_end_of_day_detention(student, grouped_absences.get((student_id, report_date), []), report_date):
-                    update_student_status(student)
-                    changed_students[student_id] = student
+    if report_date and report_context.get("coversFullDay"):
+        for student_id, existing_student in students_by_id.items():
+            student = changed_students.get(student_id) or clone_student(existing_student)
+            if evaluate_pending_detention(student, grouped_absences.get((student_id, report_date), []), report_date):
+                detention_checks_completed += 1
+                update_student_status(student)
+                changed_students[student_id] = student
 
     write_students(changed_students)
+
+    all_student_ids = set(students_by_id.keys()) | set(changed_students.keys())
+    pending_detention_checks = 0
+    if report_date:
+        for student_id in all_student_ids:
+            student = changed_students.get(student_id) or students_by_id.get(student_id) or {}
+            active_detention = student.get("activeDetention") or {}
+            if active_detention.get("pendingAttendanceCheckDate") == report_date:
+                pending_detention_checks += 1
 
     return {
         "added": new_late_count,
         "detentionsAssigned": detention_assigned_count,
-        "uploadType": upload_type,
+        "detentionChecksCompleted": detention_checks_completed,
+        "pendingDetentionChecks": pending_detention_checks,
+        "reportDate": report_date,
+        "coversFullDay": report_context.get("coversFullDay", False),
+        "latestObservedTime": report_context.get("latestObservedTime"),
     }
 
 
@@ -210,7 +216,7 @@ def clone_student(existing_student, source_row=None):
                 "status": "open",
                 "createdFromLateDate": latest_late.get("date"),
                 "scheduledForDate": latest_late.get("date"),
-                "sourceUploadType": "legacy_migration",
+                "sourceContext": "legacy_migration",
                 "createdAt": datetime.now(SYDNEY_TZ).isoformat(),
                 "lastRollMark": None,
                 "lastRollMarkedAt": None,
@@ -241,7 +247,7 @@ def clone_student(existing_student, source_row=None):
     }
 
 
-def add_late_arrival(student, late_row, upload_type):
+def add_late_arrival(student, late_row):
     existing_late_arrivals = student.get("lateArrivals", [])
     if any(entry.get("date") == late_row["date"] for entry in existing_late_arrivals):
         return False
@@ -266,7 +272,6 @@ def add_late_arrival(student, late_row, upload_type):
         "minutesLate": minutes_late,
         "shorthand": late_row["shorthand"],
         "timeRange": late_row["timeRange"],
-        "uploadType": upload_type,
     })
     existing_late_arrivals.sort(key=lambda item: item["date"], reverse=True)
 
@@ -282,12 +287,12 @@ def should_assign_detention(student):
     return not active_detention or active_detention.get("status") != "open"
 
 
-def assign_detention(student, late_row, upload_type, scheduled_date):
+def assign_detention(student, late_row, scheduled_date):
     student["activeDetention"] = {
         "status": "open",
         "createdFromLateDate": late_row["date"],
         "scheduledForDate": scheduled_date,
-        "sourceUploadType": upload_type,
+        "sourceContext": build_detention_source_context(late_row, scheduled_date),
         "createdAt": datetime.now(SYDNEY_TZ).isoformat(),
         "lastRollMark": None,
         "lastRollMarkedAt": None,
@@ -296,7 +301,7 @@ def assign_detention(student, late_row, upload_type, scheduled_date):
     }
 
 
-def evaluate_end_of_day_detention(student, student_rows_for_date, report_date):
+def evaluate_pending_detention(student, student_rows_for_date, report_date):
     active_detention = student.get("activeDetention")
     if not active_detention or active_detention.get("status") != "open":
         return False
@@ -449,68 +454,49 @@ def get_report_date(report_rows):
     return dates[-1] if dates else None
 
 
-def infer_upload_type(report_date, upload_row_count):
-    now = datetime.now(SYDNEY_TZ)
-    current_minutes = now.hour * 60 + now.minute
-    tracking = load_upload_tracking(report_date)
-    last_upload_type = tracking.get("lastUploadType")
-    previous_row_count = tracking.get("lastRowCount")
+def build_report_context(report_rows, report_date):
+    latest_observed = None
+    if report_date:
+        for row in report_rows:
+            if row["date"] != report_date:
+                continue
 
-    if last_upload_type == "midday":
-        warning = None
-        if previous_row_count is not None and upload_row_count < previous_row_count:
-            warning = "This upload is being treated as end-of-day, but it has fewer rows than the earlier upload for the same date."
-        elif current_minutes < 12 * 60:
-            warning = "A second upload for this date is being treated as end-of-day, but it is being uploaded earlier than usual."
-        return "end_of_day", warning
+            for value in (row["timeStart"], row["timeEnd"]):
+                parsed = parse_time_value(value)
+                if parsed and (latest_observed is None or parsed.time() > latest_observed):
+                    latest_observed = parsed.time()
 
-    if last_upload_type == "end_of_day":
-        warning = "This date already appears to have an end-of-day upload, so this upload is also being treated as end-of-day."
-        if previous_row_count is not None and upload_row_count > previous_row_count:
-            warning = "This date already has an end-of-day upload recorded, but the new file has more rows than the previous upload."
-        return "end_of_day", warning
+    covers_full_day = latest_observed is not None and latest_observed >= time(14, 45)
 
-    if current_minutes < 13 * 60:
-        inferred = "midday"
-    else:
-        inferred = "end_of_day"
-
-    warning = None
-    if inferred == "midday":
-        expected_min = 10 * 60
-        expected_max = 12 * 60 + 30
-        if not (expected_min <= current_minutes <= expected_max):
-            warning = "This upload was inferred as midday, but the upload time is outside the usual midday window."
-        if previous_row_count is not None and upload_row_count > previous_row_count:
-            warning = "This upload was inferred as midday, but it has more rows than the previously recorded upload for this date."
-    else:
-        expected_min = 14 * 60
-        expected_max = 18 * 60
-        if not (expected_min <= current_minutes <= expected_max):
-            warning = "This upload was inferred as end-of-day, but the upload time is outside the usual end-of-day window."
-        if previous_row_count is not None and upload_row_count < previous_row_count:
-            warning = "This upload was inferred as end-of-day, but it has fewer rows than the previously recorded upload for this date."
-
-    return inferred, warning
+    return {
+        "reportDate": report_date,
+        "coversFullDay": covers_full_day,
+        "latestObservedTime": latest_observed.strftime("%I:%M%p") if latest_observed else None,
+    }
 
 
-def load_upload_tracking(report_date):
-    if not report_date:
-        return {}
+def determine_detention_date(late_row):
+    arrival_dt = parse_time_value(late_row.get("timeEnd"))
+    if not arrival_dt:
+        return next_school_day(late_row["date"])
 
-    snapshot = db.collection("uploadTracking").document(report_date).get()
-    return snapshot.to_dict() or {}
+    if arrival_dt.time() < first_break_start_for_date(late_row["date"]):
+        return late_row["date"]
+
+    return next_school_day(late_row["date"])
 
 
-def record_upload_type(report_date, upload_type, upload_row_count):
-    if not report_date:
-        return
+def first_break_start_for_date(date_string):
+    date_value = datetime.strptime(date_string, "%Y-%m-%d").date()
+    if date_value.weekday() in {1, 3}:
+        return time(10, 25)
+    return time(10, 35)
 
-    db.collection("uploadTracking").document(report_date).set({
-        "lastUploadType": upload_type,
-        "lastRowCount": upload_row_count,
-        "updatedAt": datetime.now(SYDNEY_TZ).isoformat(),
-    }, merge=True)
+
+def build_detention_source_context(late_row, scheduled_date):
+    if scheduled_date == late_row["date"]:
+        return "auto_same_day_before_first_break"
+    return "auto_next_school_day_after_first_break"
 
 
 def verify_admin_request(require_purge_enabled):

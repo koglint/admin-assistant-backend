@@ -212,17 +212,13 @@ For each row, the backend:
 
 1. Reads the student identity and attendance metadata.
 2. Converts the date to `YYYY-MM-DD`.
-3. Lowercases the description and comment.
-4. Checks whether the description contains:
-   - `absent`
-   - `unjustified`
-5. Skips rows that do not match those keywords.
-6. Marks a record as justified if the description contains:
-   - `school business`
-   - `leave`
-   - `justified`
+3. Splits the `Time` range into left and right sides.
+4. Treats a row as a late-to-school row only when:
+   - `Shorthand` is `U` and `Description` is `Unjustified`, or
+   - `Shorthand` is `?` and `Description` is `Absent`
+   - and the left side of the time range starts at `8:00AM` or `8:25AM`
 
-This means the service intentionally filters the spreadsheet down to records considered relevant to truancy/lateness follow-up.
+This means the parser is focused specifically on missed roll-call rows rather than every absence in the export.
 
 ## Arrival Time And Minutes Late
 
@@ -240,6 +236,25 @@ The logic:
 - stores the difference as `minutesLate`
 
 If time parsing fails, `arrivalTime` and `minutesLate` remain `None`.
+
+## Upload Processing Model
+
+The backend no longer classifies uploads as "midday" or "end-of-day".
+
+Instead, each uploaded spreadsheet is treated as another snapshot of the same report date, and the backend derives what to do from the data inside that file:
+
+- a student can be uploaded multiple times on the same date without creating duplicate late records
+- only one active detention is allowed at a time
+- same-day versus next-day detention is decided from the student arrival time in the spreadsheet
+- repeated uploads for the same report date can add new late arrivals discovered later in the day
+- detention absences marked on the roll stay pending until a later upload for that date appears to include enough day coverage to resolve whether the student attended school at all
+
+First-break scheduling rule:
+
+- Tuesday and Thursday use a `10:25AM` first-break cutoff
+- Monday, Wednesday, and Friday use a `10:35AM` first-break cutoff
+- arrivals before first break can be scheduled for same-day second break
+- arrivals after first break are moved to the next school day
 
 ## Firestore Write Model
 
