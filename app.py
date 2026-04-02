@@ -156,44 +156,32 @@ def process_upload(report_rows, students_by_id, report_context):
     late_rows = [row for row in report_rows if is_roll_call_late(row)]
     grouped_absences = group_rows_by_student_and_date(report_rows)
 
-    changed_students = {}
     new_late_count = 0
     detention_assigned_count = 0
     detention_checks_completed = 0
 
+    late_rows_by_student = {}
     for late_row in late_rows:
-        student_id = late_row["studentId"]
-        student = changed_students.get(student_id) or clone_student(students_by_id.get(student_id), late_row)
+        late_rows_by_student.setdefault(late_row["studentId"], []).append(late_row)
 
-        if add_late_arrival(student, late_row):
-            new_late_count += 1
-
-            if should_assign_detention(student):
-                scheduled_date = determine_detention_date(late_row)
-                assign_detention(student, late_row, scheduled_date)
-                detention_assigned_count += 1
-
-        update_student_status(student)
-        changed_students[student_id] = student
+    for student_id, rows_for_student in late_rows_by_student.items():
+        late_added, detentions_assigned = apply_late_rows_transaction(
+            student_id,
+            rows_for_student
+        )
+        new_late_count += late_added
+        detention_assigned_count += detentions_assigned
 
     if report_date and report_context.get("coversFullDay"):
-        for student_id, existing_student in students_by_id.items():
-            student = changed_students.get(student_id) or clone_student(existing_student)
-            if evaluate_pending_detention(student, grouped_absences.get((student_id, report_date), []), report_date):
+        for student_id in students_by_id.keys():
+            if apply_pending_detention_transaction(
+                student_id,
+                grouped_absences.get((student_id, report_date), []),
+                report_date
+            ):
                 detention_checks_completed += 1
-                update_student_status(student)
-                changed_students[student_id] = student
 
-    write_students(changed_students)
-
-    all_student_ids = set(students_by_id.keys()) | set(changed_students.keys())
-    pending_detention_checks = 0
-    if report_date:
-        for student_id in all_student_ids:
-            student = changed_students.get(student_id) or students_by_id.get(student_id) or {}
-            active_detention = student.get("activeDetention") or {}
-            if active_detention.get("pendingAttendanceCheckDate") == report_date:
-                pending_detention_checks += 1
+    pending_detention_checks = count_pending_detention_checks(report_date) if report_date else 0
 
     return {
         "added": new_late_count,
@@ -296,6 +284,85 @@ def add_late_arrival(student, late_row):
     student["lateCount"] = len(existing_late_arrivals)
     student["truancyCount"] = len(existing_late_arrivals)
     return True
+
+
+def apply_late_rows_transaction(student_id, late_rows):
+    transaction = db.transaction()
+    student_ref = db.collection("students").document(student_id)
+
+    @firestore.transactional
+    def _apply(transaction_obj):
+        snapshot = transaction_obj.get(student_ref)
+        student = clone_student(snapshot.to_dict() if snapshot.exists else None, late_rows[0])
+        original_student = snapshot.to_dict() if snapshot.exists else None
+        late_added = 0
+        detentions_assigned = 0
+
+        for late_row in sorted(late_rows, key=lambda row: (row["date"], row.get("timeEnd") or "")):
+            if add_late_arrival(student, late_row):
+                late_added += 1
+                if should_assign_detention(student):
+                    scheduled_date = determine_detention_date(late_row)
+                    assign_detention(student, late_row, scheduled_date)
+                    detentions_assigned += 1
+
+        update_student_status(student)
+        if late_added == 0 and detentions_assigned == 0 and not student_identity_changed(original_student, student):
+            return 0, 0
+
+        apply_audit_fields(student, "backend_upload_sync", "backend_upload")
+        transaction_obj.set(student_ref, student)
+        return late_added, detentions_assigned
+
+    return _apply(transaction)
+
+
+def apply_pending_detention_transaction(student_id, student_rows_for_date, report_date):
+    transaction = db.transaction()
+    student_ref = db.collection("students").document(student_id)
+
+    @firestore.transactional
+    def _apply(transaction_obj):
+        snapshot = transaction_obj.get(student_ref)
+        if not snapshot.exists:
+            return False
+
+        student = clone_student(snapshot.to_dict())
+        if not evaluate_pending_detention(student, student_rows_for_date, report_date):
+            return False
+
+        update_student_status(student)
+        apply_audit_fields(student, "backend_detention_attendance_evaluated", "backend_upload")
+        transaction_obj.set(student_ref, student)
+        return True
+
+    return _apply(transaction)
+
+
+def count_pending_detention_checks(report_date):
+    pending_count = 0
+    for student_snapshot in db.collection("students").stream():
+        active_detention = student_snapshot.to_dict().get("activeDetention") or {}
+        if active_detention.get("pendingAttendanceCheckDate") == report_date:
+            pending_count += 1
+    return pending_count
+
+
+def apply_audit_fields(student, action, actor):
+    student["updatedAt"] = firestore.SERVER_TIMESTAMP
+    student["updatedBy"] = actor
+    student["lastAction"] = action
+
+
+def student_identity_changed(original_student, updated_student):
+    if not original_student:
+        return True
+
+    for key in ("givenName", "surname", "rollClass", "yearGroup"):
+        if (original_student.get(key) or "") != (updated_student.get(key) or ""):
+            return True
+
+    return False
 
 
 def should_assign_detention(student):
