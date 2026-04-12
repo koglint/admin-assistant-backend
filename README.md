@@ -4,6 +4,19 @@ This repository contains the Flask backend for the Attendance Assistant project.
 
 This service is designed to run on Render and be called by the static frontend hosted separately.
 
+## TL;DR
+
+This backend is the rules engine for the whole Attendance Assistant app.
+
+It accepts Sentral attendance exports, identifies which rows count as late-to-school cases, calculates arrival times and minutes late, creates or updates student records in Firestore, manages detention assignment and detention follow-up state, recalculates escalation status and escalation causes, and exposes the protected admin purge endpoint.
+
+In practice:
+
+- the frontend uploads the spreadsheet here
+- this backend interprets the attendance data
+- Firestore stores the resulting student state
+- the frontend then reads Firestore directly to show the updated website state
+
 ## What This Service Does
 
 The backend exposes a small API:
@@ -239,9 +252,7 @@ If time parsing fails, `arrivalTime` and `minutesLate` remain `None`.
 
 ## Upload Processing Model
 
-The backend no longer classifies uploads as "midday" or "end-of-day".
-
-Instead, each uploaded spreadsheet is treated as another snapshot of the same report date, and the backend derives what to do from the data inside that file:
+Each uploaded spreadsheet is treated as another snapshot of the same report date, and the backend derives what to do from the data inside that file:
 
 - a student can be uploaded multiple times on the same date without creating duplicate late records
 - only one active detention is allowed at a time
@@ -265,12 +276,23 @@ When a new student is first seen, the backend creates a document with fields lik
 - `givenName`
 - `surname`
 - `rollClass`
+- `yearGroup`
+- `lateArrivals`
 - `truancyCount`
+- `lateCount`
 - `truancyResolved`
 - `truancies`
 - `detentionsServed`
+- `detentionHistory`
+- `activeDetention`
 - `notes`
 - `escalated`
+- `escalationReasons`
+- `escalationCause`
+- `lastEscalationReasons`
+- `lastEscalationCause`
+- `manualEscalation`
+- `escalationSuppression`
 
 Each truancy record includes:
 
@@ -302,13 +324,26 @@ This is a simple duplicate rule. If multiple distinct truancies can happen on th
 
 ## Resolution Logic
 
-When a new truancy is added to an existing student:
+The backend resolves current status from the student's live detention state.
 
-- the backend reads `lastDetentionServedDate`
-- compares it with the latest truancy date
-- recalculates `truancyResolved`
+Current rules:
 
-This allows the frontend detention workflow to drive whether a student appears resolved or unresolved after new uploads.
+- if `activeDetention.status == "open"`, the student is treated as unresolved and `truancyResolved` becomes `false`
+- if there is no open active detention, `truancyResolved` becomes `true`
+
+This calculation happens in the backend status update logic alongside escalation recalculation.
+
+Related escalation rules:
+
+- `manualEscalation` adds the `manual_escalation` reason
+- more than 5 late arrivals adds `late_count_over_five`
+- an open detention with `missedWhilePresentCount >= 2` adds `missed_detention_twice`
+
+The backend also writes:
+
+- `escalationReasons`: machine-readable reason list
+- `escalationCause`: readable text for frontend display and exports
+- `lastEscalationReasons` / `lastEscalationCause`: most recent escalation cause retained for reference
 
 ## Local Development
 
