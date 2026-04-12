@@ -210,6 +210,9 @@ def clone_student(existing_student, source_row=None):
         student["truancies"] = list(student["lateArrivals"])
         student["detentionHistory"] = list(existing_student.get("detentionHistory", []))
         student["escalationReasons"] = list(existing_student.get("escalationReasons", []))
+        student["lastEscalationReasons"] = list(existing_student.get("lastEscalationReasons", existing_student.get("escalationReasons", [])))
+        student["escalationCause"] = existing_student.get("escalationCause", "")
+        student["lastEscalationCause"] = existing_student.get("lastEscalationCause", existing_student.get("escalationCause", ""))
         student["activeDetention"] = dict(existing_student.get("activeDetention", {})) if existing_student.get("activeDetention") else None
         student["escalationSuppression"] = dict(existing_student.get("escalationSuppression", {}))
         if not student["activeDetention"] and existing_student.get("truancyResolved") is False and student["lateArrivals"]:
@@ -241,6 +244,9 @@ def clone_student(existing_student, source_row=None):
         "activeDetention": None,
         "escalated": False,
         "escalationReasons": [],
+        "lastEscalationReasons": [],
+        "escalationCause": "",
+        "lastEscalationCause": "",
         "manualEscalation": False,
         "escalationSuppression": {
             "lateCountUntil": 0,
@@ -430,10 +436,28 @@ def update_student_status(student):
     if active_detention_open and missed_count >= 2 and missed_count > suppression.get("missedCountUntil", 0):
         reasons.append("missed_detention_twice")
 
+    cause_text = format_escalation_reasons(reasons)
     student["escalationReasons"] = reasons
+    student["escalationCause"] = cause_text
     student["escalated"] = bool(reasons)
+    if reasons:
+        student["lastEscalationReasons"] = list(reasons)
+        student["lastEscalationCause"] = cause_text
     student["truancyResolved"] = not active_detention_open
     student["activeDetention"] = active_detention if active_detention_open else None
+
+
+def format_escalation_reasons(reasons):
+    labels = {
+        "manual_escalation": "Manual escalation",
+        "late_count_over_five": "More than five late arrivals",
+        "missed_detention_twice": "Missed detention twice while present at school",
+    }
+
+    if not reasons:
+        return ""
+
+    return ", ".join(labels.get(reason, reason) for reason in reasons)
 
 
 def write_students(changed_students):
