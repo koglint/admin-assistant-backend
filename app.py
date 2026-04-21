@@ -23,9 +23,22 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 SYDNEY_TZ = ZoneInfo("Australia/Sydney")
-ALLOWED_ADMIN_EMAILS = {
-    "troy.koglin1@det.nsw.edu.au",
-    "troy.koglin1@education.nsw.gov.au",
+ALLOWED_ADMIN_USERNAMES = {
+    "troy.koglin1",
+    "gordon.nolan2",
+    "david.boscoscuro",
+    "peter.hales",
+    "janine.neden",
+    "jennifer.lynne.lawrence",
+    "carly.johnston7",
+    "kylie.cutajar4",
+    "louise.oneill6",
+    "david.baldwin12",
+    "nathan.ralstonbryce",
+}
+ALLOWED_ADMIN_DOMAINS = {
+    "det.nsw.edu.au",
+    "education.nsw.gov.au",
 }
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_PURGE_ENABLED = os.environ.get("ADMIN_PURGE_ENABLED", "false").lower() == "true"
@@ -657,7 +670,7 @@ def verify_admin_request(require_purge_enabled):
     if not decoded_token.get("email_verified", False):
         return None, (jsonify({"status": "error", "message": "Email address is not verified."}), 403)
 
-    if email not in ALLOWED_ADMIN_EMAILS:
+    if not is_allowed_admin_email(email):
         return None, (jsonify({"status": "error", "message": "This account is not allowed to use admin controls."}), 403)
 
     payload = request.get_json(silent=True) or {}
@@ -665,6 +678,15 @@ def verify_admin_request(require_purge_enabled):
         return None, (jsonify({"status": "error", "message": "Admin password was incorrect."}), 403)
 
     return payload, None
+
+
+def is_allowed_admin_email(email):
+    parts = email.split("@", 1)
+    if len(parts) != 2:
+        return False
+
+    username, domain = parts
+    return username in ALLOWED_ADMIN_USERNAMES and domain in ALLOWED_ADMIN_DOMAINS
 
 
 def extract_bearer_token(header_value):

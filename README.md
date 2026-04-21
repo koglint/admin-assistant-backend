@@ -163,9 +163,19 @@ It is intentionally protected by several checks:
 - the server must have `ADMIN_PASSWORD` configured
 - the request must include a valid Firebase ID token in the `Authorization: Bearer <token>` header
 - the signed-in Firebase user must have a verified email
-- the email must be one of:
-  - `troy.koglin1@det.nsw.edu.au`
-  - `troy.koglin1@education.nsw.gov.au`
+- the signed-in email must use an approved admin username with either `@det.nsw.edu.au` or `@education.nsw.gov.au`
+- approved admin usernames:
+  - `troy.koglin1`
+  - `gordon.nolan2`
+  - `david.boscoscuro`
+  - `peter.hales`
+  - `janine.neden`
+  - `jennifer.lynne.lawrence`
+  - `carly.johnston7`
+  - `kylie.cutajar4`
+  - `louise.oneill6`
+  - `david.baldwin12`
+  - `nathan.ralstonbryce`
 - the request body must include the correct backend password
 - the request body must include `confirmation: "DELETE"`
 
