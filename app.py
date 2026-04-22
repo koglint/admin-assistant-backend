@@ -311,9 +311,9 @@ def apply_late_rows_transaction(student_id, late_rows):
 
     @firestore.transactional
     def _apply(transaction_obj):
-        snapshot = transaction_obj.get(student_ref)
-        student = clone_student(snapshot.to_dict() if snapshot.exists else None, late_rows[0])
-        original_student = snapshot.to_dict() if snapshot.exists else None
+        snapshot = next(transaction_obj.get(student_ref), None)
+        student = clone_student(snapshot.to_dict() if snapshot and snapshot.exists else None, late_rows[0])
+        original_student = snapshot.to_dict() if snapshot and snapshot.exists else None
         late_added = 0
         detentions_assigned = 0
 
@@ -342,8 +342,8 @@ def apply_pending_detention_transaction(student_id, student_rows_for_date, repor
 
     @firestore.transactional
     def _apply(transaction_obj):
-        snapshot = transaction_obj.get(student_ref)
-        if not snapshot.exists:
+        snapshot = next(transaction_obj.get(student_ref), None)
+        if not snapshot or not snapshot.exists:
             return False
 
         student = clone_student(snapshot.to_dict())
