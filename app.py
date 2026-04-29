@@ -109,6 +109,34 @@ def admin_authorize():
     })
 
 
+@app.route("/attendance-days/lookup", methods=["POST"])
+def attendance_days_lookup():
+    payload = request.get_json(silent=True) or {}
+    pairs = payload.get("pairs") or []
+    if not isinstance(pairs, list):
+        return jsonify({"status": "error", "message": "pairs must be a list."}), 400
+
+    results = {}
+    for pair in pairs[:1000]:
+        if not isinstance(pair, dict):
+            continue
+
+        student_id = str(pair.get("studentId", "")).strip()
+        date_string = str(pair.get("date", "")).strip()
+        if not student_id or not date_string:
+            continue
+
+        doc_id = build_attendance_day_doc_id(student_id, date_string)
+        snapshot = db.collection("attendance_days").document(doc_id).get()
+        if snapshot.exists:
+            results[doc_id] = snapshot.to_dict()
+
+    return jsonify({
+        "status": "success",
+        "records": results,
+    })
+
+
 def normalize_dataframe(df):
     normalized = df.copy()
     normalized["Date"] = pd.to_datetime(normalized.get("Date"), errors="coerce")
