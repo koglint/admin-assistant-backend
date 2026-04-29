@@ -358,6 +358,7 @@ def apply_late_rows_transaction(student_id, late_rows):
         original_student = snapshot.to_dict() if snapshot and snapshot.exists else None
         late_added = 0
         detentions_assigned = 0
+        detention_reconciled = False
 
         for late_row in sorted(late_rows, key=lambda row: (row["date"], row.get("timeEnd") or "")):
             if add_late_arrival(student, late_row):
@@ -366,9 +367,11 @@ def apply_late_rows_transaction(student_id, late_rows):
                     scheduled_date = determine_detention_date(late_row)
                     assign_detention(student, late_row, scheduled_date)
                     detentions_assigned += 1
+            elif reconcile_active_detention_schedule(student, late_row):
+                detention_reconciled = True
 
         update_student_status(student)
-        if late_added == 0 and detentions_assigned == 0 and not student_identity_changed(original_student, student):
+        if late_added == 0 and detentions_assigned == 0 and not detention_reconciled and not student_identity_changed(original_student, student):
             return 0, 0
 
         apply_audit_fields(student, "backend_upload_sync", "backend_upload")
@@ -445,6 +448,31 @@ def assign_detention(student, late_row, scheduled_date):
     }
 
 
+def reconcile_active_detention_schedule(student, late_row):
+    active_detention = student.get("activeDetention")
+    if not active_detention or active_detention.get("status") != "open":
+        return False
+
+    if active_detention.get("pendingAttendanceCheckDate"):
+        return False
+
+    if active_detention.get("createdFromLateDate") != late_row["date"]:
+        return False
+
+    corrected_date = determine_detention_date(late_row)
+    corrected_context = build_detention_source_context(late_row, corrected_date)
+    if (
+        active_detention.get("scheduledForDate") == corrected_date
+        and active_detention.get("sourceContext") == corrected_context
+    ):
+        return False
+
+    active_detention["scheduledForDate"] = corrected_date
+    active_detention["sourceContext"] = corrected_context
+    student["activeDetention"] = active_detention
+    return True
+
+
 def evaluate_pending_detention(student, attendance_day_record, report_date):
     active_detention = student.get("activeDetention")
     if not active_detention or active_detention.get("status") != "open":
@@ -464,13 +492,15 @@ def evaluate_pending_detention(student, attendance_day_record, report_date):
         active_detention["missedWhilePresentCount"] = active_detention.get("missedWhilePresentCount", 0) + 1
         student.setdefault("detentionHistory", []).append({
             "date": report_date,
-            "scheduledForDate": report_date,
+            "lateDate": active_detention.get("createdFromLateDate"),
+            "scheduledForDate": active_detention.get("scheduledForDate") or report_date,
             "outcome": "missed_while_present",
         })
     else:
         student.setdefault("detentionHistory", []).append({
             "date": report_date,
-            "scheduledForDate": report_date,
+            "lateDate": active_detention.get("createdFromLateDate"),
+            "scheduledForDate": active_detention.get("scheduledForDate") or report_date,
             "outcome": "absent_from_school",
         })
 
