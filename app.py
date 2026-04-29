@@ -14,7 +14,16 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "https://koglint.github.io"}})
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": ["https://koglint.github.io"],
+            "methods": ["GET", "POST", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+        }
+    },
+)
 app.config["CORS_HEADERS"] = "Content-Type"
 
 cred_dict = json.loads(os.environ["FIREBASE_KEY_JSON"])
@@ -109,8 +118,11 @@ def admin_authorize():
     })
 
 
-@app.route("/attendance-days/lookup", methods=["POST"])
+@app.route("/attendance-days/lookup", methods=["POST", "OPTIONS"])
 def attendance_days_lookup():
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"})
+
     payload = request.get_json(silent=True) or {}
     pairs = payload.get("pairs") or []
     if not isinstance(pairs, list):
