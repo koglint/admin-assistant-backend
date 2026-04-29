@@ -720,14 +720,18 @@ def get_latest_observed_time(rows):
 
 
 def determine_detention_date(late_row):
+    late_date = late_row["date"]
+    if is_tuesday(late_date):
+        return next_school_day(late_date)
+
     arrival_dt = parse_time_value(late_row.get("timeEnd"))
     if not arrival_dt:
-        return next_school_day(late_row["date"])
+        return next_school_day(late_date)
 
-    if arrival_dt.time() < first_break_start_for_date(late_row["date"]):
-        return late_row["date"]
+    if arrival_dt.time() < first_break_start_for_date(late_date):
+        return late_date
 
-    return next_school_day(late_row["date"])
+    return next_school_day(late_date)
 
 
 def first_break_start_for_date(date_string):
@@ -737,7 +741,14 @@ def first_break_start_for_date(date_string):
     return time(10, 35)
 
 
+def is_tuesday(date_string):
+    date_value = datetime.strptime(date_string, "%Y-%m-%d").date()
+    return date_value.weekday() == 1
+
+
 def build_detention_source_context(late_row, scheduled_date):
+    if is_tuesday(late_row["date"]):
+        return "auto_next_school_day_tuesday_detention_runs_first_break"
     if scheduled_date == late_row["date"]:
         return "auto_same_day_before_first_break"
     return "auto_next_school_day_after_first_break"

@@ -270,12 +270,13 @@ Each uploaded spreadsheet is treated as another snapshot of the same report date
 - repeated uploads for the same report date can add new late arrivals discovered later in the day
 - detention absences marked on the roll stay pending until a later upload for that date appears to include enough day coverage to resolve whether the student attended school at all
 
-First-break scheduling rule:
+Scheduling rule:
 
-- Tuesday and Thursday use a `10:25AM` first-break cutoff
-- Monday, Wednesday, and Friday use a `10:35AM` first-break cutoff
-- arrivals before first break can be scheduled for same-day second break
-- arrivals after first break are moved to the next school day
+- Tuesday late arrivals are always moved to the next school day because detention runs at first break
+- Thursday uses a `10:25AM` first-break cutoff for same-day versus next-day detention
+- Monday, Wednesday, and Friday use a `10:35AM` first-break cutoff for same-day versus next-day detention
+- on Monday, Wednesday, Thursday, and Friday, arrivals before first break can be scheduled for same-day detention
+- on Monday, Wednesday, Thursday, and Friday, arrivals from first break onward are moved to the next school day
 
 ## Firestore Write Model
 
