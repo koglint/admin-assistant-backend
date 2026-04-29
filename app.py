@@ -167,7 +167,9 @@ def load_existing_students():
 def process_upload(report_rows, students_by_id, report_context):
     report_date = report_context.get("reportDate")
     late_rows = [row for row in report_rows if is_roll_call_late(row)]
-    grouped_absences = group_rows_by_student_and_date(report_rows)
+    attendance_day_records = build_attendance_day_records(report_rows)
+
+    write_attendance_day_records(attendance_day_records)
 
     new_late_count = 0
     detention_assigned_count = 0
@@ -189,7 +191,7 @@ def process_upload(report_rows, students_by_id, report_context):
         for student_id in students_by_id.keys():
             if apply_pending_detention_transaction(
                 student_id,
-                grouped_absences.get((student_id, report_date), []),
+                attendance_day_records.get((student_id, report_date)),
                 report_date
             ):
                 detention_checks_completed += 1
@@ -336,7 +338,7 @@ def apply_late_rows_transaction(student_id, late_rows):
     return _apply(transaction)
 
 
-def apply_pending_detention_transaction(student_id, student_rows_for_date, report_date):
+def apply_pending_detention_transaction(student_id, attendance_day_record, report_date):
     transaction = db.transaction()
     student_ref = db.collection("students").document(student_id)
 
@@ -347,7 +349,7 @@ def apply_pending_detention_transaction(student_id, student_rows_for_date, repor
             return False
 
         student = clone_student(snapshot.to_dict())
-        if not evaluate_pending_detention(student, student_rows_for_date, report_date):
+        if not evaluate_pending_detention(student, attendance_day_record, report_date):
             return False
 
         update_student_status(student)
@@ -403,7 +405,7 @@ def assign_detention(student, late_row, scheduled_date):
     }
 
 
-def evaluate_pending_detention(student, student_rows_for_date, report_date):
+def evaluate_pending_detention(student, attendance_day_record, report_date):
     active_detention = student.get("activeDetention")
     if not active_detention or active_detention.get("status") != "open":
         return False
@@ -411,7 +413,10 @@ def evaluate_pending_detention(student, student_rows_for_date, report_date):
     if active_detention.get("pendingAttendanceCheckDate") != report_date:
         return False
 
-    present_at_school = determine_present_at_school(student_rows_for_date)
+    if not attendance_day_record or not attendance_day_record.get("hasFullDayCoverage"):
+        return False
+
+    present_at_school = attendance_day_record.get("presentAtSchool", True)
     active_detention["lastEvaluatedDate"] = report_date
     active_detention["pendingAttendanceCheckDate"] = None
 
@@ -497,6 +502,50 @@ def group_rows_by_student_and_date(rows):
     for row in rows:
         grouped.setdefault((row["studentId"], row["date"]), []).append(row)
     return grouped
+
+
+def build_attendance_day_records(rows):
+    records = {}
+    for (student_id, date_string), student_rows in group_rows_by_student_and_date(rows).items():
+        latest_observed = get_latest_observed_time(student_rows)
+        records[(student_id, date_string)] = {
+            "studentId": student_id,
+            "date": date_string,
+            "presentAtSchool": determine_present_at_school(student_rows),
+            "hasFullDayCoverage": latest_observed is not None and latest_observed >= time(14, 45),
+            "latestObservedTime": latest_observed.strftime("%I:%M%p") if latest_observed else None,
+            "rowCount": len(student_rows),
+        }
+    return records
+
+
+def write_attendance_day_records(attendance_day_records):
+    if not attendance_day_records:
+        return
+
+    batch = db.batch()
+    batch_size = 0
+
+    for record in attendance_day_records.values():
+        doc_id = build_attendance_day_doc_id(record["studentId"], record["date"])
+        doc_ref = db.collection("attendance_days").document(doc_id)
+        batch.set(doc_ref, {
+            **record,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        batch_size += 1
+
+        if batch_size >= 450:
+            batch.commit()
+            batch = db.batch()
+            batch_size = 0
+
+    if batch_size:
+        batch.commit()
+
+
+def build_attendance_day_doc_id(student_id, date_string):
+    return f"{student_id}_{date_string}"
 
 
 def determine_present_at_school(student_rows_for_date):
@@ -607,14 +656,9 @@ def get_report_date(report_rows):
 def build_report_context(report_rows, report_date):
     latest_observed = None
     if report_date:
-        for row in report_rows:
-            if row["date"] != report_date:
-                continue
-
-            for value in (row["timeStart"], row["timeEnd"]):
-                parsed = parse_time_value(value)
-                if parsed and (latest_observed is None or parsed.time() > latest_observed):
-                    latest_observed = parsed.time()
+        latest_observed = get_latest_observed_time(
+            [row for row in report_rows if row["date"] == report_date]
+        )
 
     covers_full_day = latest_observed is not None and latest_observed >= time(14, 45)
 
@@ -623,6 +667,16 @@ def build_report_context(report_rows, report_date):
         "coversFullDay": covers_full_day,
         "latestObservedTime": latest_observed.strftime("%I:%M%p") if latest_observed else None,
     }
+
+
+def get_latest_observed_time(rows):
+    latest_observed = None
+    for row in rows:
+        for value in (row["timeStart"], row["timeEnd"]):
+            parsed = parse_time_value(value)
+            if parsed and (latest_observed is None or parsed.time() > latest_observed):
+                latest_observed = parsed.time()
+    return latest_observed
 
 
 def determine_detention_date(late_row):
