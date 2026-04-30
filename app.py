@@ -227,6 +227,9 @@ def process_upload(report_rows, students_by_id, report_context):
         new_late_count += late_added
         detention_assigned_count += detentions_assigned
 
+    for student_id in students_by_id.keys():
+        reconcile_student_detention_schedule_transaction(student_id)
+
     if report_date and report_context.get("coversFullDay"):
         for student_id in students_by_id.keys():
             if apply_pending_detention_transaction(
@@ -403,6 +406,28 @@ def apply_pending_detention_transaction(student_id, attendance_day_record, repor
     return _apply(transaction)
 
 
+def reconcile_student_detention_schedule_transaction(student_id):
+    transaction = db.transaction()
+    student_ref = db.collection("students").document(student_id)
+
+    @firestore.transactional
+    def _apply(transaction_obj):
+        snapshot = next(transaction_obj.get(student_ref), None)
+        if not snapshot or not snapshot.exists:
+            return False
+
+        student = clone_student(snapshot.to_dict())
+        if not reconcile_active_detention_from_history(student):
+            return False
+
+        update_student_status(student)
+        apply_audit_fields(student, "backend_detention_schedule_reconciled", "backend_upload")
+        transaction_obj.set(student_ref, student)
+        return True
+
+    return _apply(transaction)
+
+
 def count_pending_detention_checks(report_date):
     pending_count = 0
     for student_snapshot in db.collection("students").stream():
@@ -471,6 +496,40 @@ def reconcile_active_detention_schedule(student, late_row):
     active_detention["sourceContext"] = corrected_context
     student["activeDetention"] = active_detention
     return True
+
+
+def reconcile_active_detention_from_history(student):
+    active_detention = student.get("activeDetention")
+    if not active_detention or active_detention.get("status") != "open":
+        return False
+
+    late_date = active_detention.get("createdFromLateDate")
+    if not late_date:
+        return False
+
+    matching_late = next(
+        (entry for entry in student.get("lateArrivals", []) if entry.get("date") == late_date),
+        None
+    )
+    if not matching_late:
+        return False
+
+    corrected_date = determine_detention_date_from_late_record(late_date, matching_late)
+    corrected_context = build_detention_source_context({"date": late_date}, corrected_date)
+    changed = False
+
+    if active_detention.get("scheduledForDate") != corrected_date:
+        active_detention["scheduledForDate"] = corrected_date
+        changed = True
+
+    if active_detention.get("sourceContext") != corrected_context:
+        active_detention["sourceContext"] = corrected_context
+        changed = True
+
+    if changed:
+        student["activeDetention"] = active_detention
+
+    return changed
 
 
 def evaluate_pending_detention(student, attendance_day_record, report_date):
@@ -755,6 +814,20 @@ def determine_detention_date(late_row):
         return next_school_day(late_date)
 
     arrival_dt = parse_time_value(late_row.get("timeEnd"))
+    if not arrival_dt:
+        return next_school_day(late_date)
+
+    if arrival_dt.time() < first_break_start_for_date(late_date):
+        return late_date
+
+    return next_school_day(late_date)
+
+
+def determine_detention_date_from_late_record(late_date, late_record):
+    if is_tuesday(late_date):
+        return next_school_day(late_date)
+
+    arrival_dt = parse_time_value(late_record.get("arrivalTime"))
     if not arrival_dt:
         return next_school_day(late_date)
 
