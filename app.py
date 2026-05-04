@@ -283,17 +283,14 @@ def process_upload(report_rows, students_by_id, report_context):
         reconcile_student_detention_schedule_transaction(student_id)
 
     full_coverage_dates = get_full_coverage_dates(attendance_day_records)
-    student_ids_to_check = set(students_by_id.keys()) | {
-        student_id for student_id, _ in attendance_day_records.keys()
-    }
-    for student_id in student_ids_to_check:
-        for attendance_date in full_coverage_dates:
-            if apply_pending_detention_transaction(
-                student_id,
-                attendance_day_records.get((student_id, attendance_date)),
-                attendance_date
-            ):
-                detention_checks_completed += 1
+    pending_detention_candidates = get_pending_detention_check_candidates(full_coverage_dates)
+    for student_id, attendance_date in pending_detention_candidates:
+        if apply_pending_detention_transaction(
+            student_id,
+            attendance_day_records.get((student_id, attendance_date)),
+            attendance_date
+        ):
+            detention_checks_completed += 1
 
     pending_detention_checks = count_pending_detention_checks()
 
@@ -306,6 +303,7 @@ def process_upload(report_rows, students_by_id, report_context):
         "coversFullDay": report_context.get("coversFullDay", False),
         "latestObservedTime": report_context.get("latestObservedTime"),
         "attendanceDatesChecked": len(full_coverage_dates),
+        "detentionChecksMatched": len(pending_detention_candidates),
     }
 
 
@@ -493,6 +491,21 @@ def count_pending_detention_checks(report_date=None):
         if pending_date and (report_date is None or pending_date == report_date):
             pending_count += 1
     return pending_count
+
+
+def get_pending_detention_check_candidates(full_coverage_dates):
+    full_coverage_date_set = set(full_coverage_dates)
+    if not full_coverage_date_set:
+        return []
+
+    candidates = []
+    for student_snapshot in db.collection("students").stream():
+        active_detention = student_snapshot.to_dict().get("activeDetention") or {}
+        pending_date = active_detention.get("pendingAttendanceCheckDate")
+        if pending_date in full_coverage_date_set:
+            candidates.append((student_snapshot.id, pending_date))
+
+    return candidates
 
 
 def apply_audit_fields(student, action, actor):
