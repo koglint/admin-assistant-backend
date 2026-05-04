@@ -4,10 +4,12 @@ import io
 import json
 import os
 import traceback
+from zipfile import is_zipfile
 
 
 import firebase_admin
 import pandas as pd
+import xlrd
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials, firestore
 from flask import Flask, jsonify, request
@@ -66,15 +68,8 @@ def upload():
         return jsonify({"status": "error", "message": "No selected file"}), 400
 
     try:
-        workbook = io.BytesIO(uploaded_file.read())
-        try:
-            df = pd.read_excel(workbook, engine="xlrd")
-        except Exception as xlrd_error:
-            workbook.seek(0)
-            try:
-                df = pd.read_excel(workbook, engine="openpyxl")
-            except Exception as openpyxl_error:
-                raise ValueError(f"xlrd error: {xlrd_error}; openpyxl error: {openpyxl_error}")
+        workbook_bytes = uploaded_file.read()
+        df = read_attendance_workbook(workbook_bytes)
     except Exception as exc:
         traceback.print_exc()
         return jsonify({"status": "error", "message": f"Excel read failed: {exc}"}), 500
@@ -167,6 +162,63 @@ def normalize_dataframe(df):
     normalized["Explainer"] = normalized.get("Explainer", "").fillna("").astype(str).str.strip()
     normalized["Explainer Source"] = normalized.get("Explainer Source", "").fillna("").astype(str).str.strip()
     return normalized
+
+
+def read_attendance_workbook(workbook_bytes):
+    errors = []
+
+    if is_zipfile(io.BytesIO(workbook_bytes)):
+        try:
+            return pd.read_excel(io.BytesIO(workbook_bytes), engine="openpyxl")
+        except Exception as exc:
+            errors.append(f"openpyxl error: {exc}")
+    else:
+        errors.append("openpyxl skipped: file is not an .xlsx zip workbook")
+
+    try:
+        return pd.read_excel(io.BytesIO(workbook_bytes), engine="xlrd")
+    except Exception as exc:
+        errors.append(f"xlrd error: {exc}")
+
+    for encoding in ("cp1252", "latin1"):
+        try:
+            workbook = xlrd.open_workbook(
+                file_contents=workbook_bytes,
+                encoding_override=encoding,
+            )
+            return xlrd_first_sheet_to_dataframe(workbook)
+        except Exception as exc:
+            errors.append(f"xlrd {encoding} fallback error: {exc}")
+
+    raise ValueError("; ".join(errors))
+
+
+def xlrd_first_sheet_to_dataframe(workbook):
+    sheet = workbook.sheet_by_index(0)
+    if sheet.nrows == 0:
+        return pd.DataFrame()
+
+    headers = [
+        str(xlrd_cell_value(sheet.cell(0, col_index), workbook.datemode) or "").strip()
+        for col_index in range(sheet.ncols)
+    ]
+
+    rows = []
+    for row_index in range(1, sheet.nrows):
+        rows.append([
+            xlrd_cell_value(sheet.cell(row_index, col_index), workbook.datemode)
+            for col_index in range(sheet.ncols)
+        ])
+
+    return pd.DataFrame(rows, columns=headers)
+
+
+def xlrd_cell_value(cell, datemode):
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        return xlrd.xldate.xldate_as_datetime(cell.value, datemode)
+    if cell.ctype == xlrd.XL_CELL_EMPTY:
+        return ""
+    return cell.value
 
 
 def build_report_rows(df):
