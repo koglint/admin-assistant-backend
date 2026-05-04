@@ -282,16 +282,20 @@ def process_upload(report_rows, students_by_id, report_context):
     for student_id in students_by_id.keys():
         reconcile_student_detention_schedule_transaction(student_id)
 
-    if report_date and report_context.get("coversFullDay"):
-        for student_id in students_by_id.keys():
+    full_coverage_dates = get_full_coverage_dates(attendance_day_records)
+    student_ids_to_check = set(students_by_id.keys()) | {
+        student_id for student_id, _ in attendance_day_records.keys()
+    }
+    for student_id in student_ids_to_check:
+        for attendance_date in full_coverage_dates:
             if apply_pending_detention_transaction(
                 student_id,
-                attendance_day_records.get((student_id, report_date)),
-                report_date
+                attendance_day_records.get((student_id, attendance_date)),
+                attendance_date
             ):
                 detention_checks_completed += 1
 
-    pending_detention_checks = count_pending_detention_checks(report_date) if report_date else 0
+    pending_detention_checks = count_pending_detention_checks()
 
     return {
         "added": new_late_count,
@@ -301,6 +305,7 @@ def process_upload(report_rows, students_by_id, report_context):
         "reportDate": report_date,
         "coversFullDay": report_context.get("coversFullDay", False),
         "latestObservedTime": report_context.get("latestObservedTime"),
+        "attendanceDatesChecked": len(full_coverage_dates),
     }
 
 
@@ -480,11 +485,12 @@ def reconcile_student_detention_schedule_transaction(student_id):
     return _apply(transaction)
 
 
-def count_pending_detention_checks(report_date):
+def count_pending_detention_checks(report_date=None):
     pending_count = 0
     for student_snapshot in db.collection("students").stream():
         active_detention = student_snapshot.to_dict().get("activeDetention") or {}
-        if active_detention.get("pendingAttendanceCheckDate") == report_date:
+        pending_date = active_detention.get("pendingAttendanceCheckDate")
+        if pending_date and (report_date is None or pending_date == report_date):
             pending_count += 1
     return pending_count
 
@@ -698,6 +704,14 @@ def build_attendance_day_records(rows):
             "rowCount": len(student_rows),
         }
     return records
+
+
+def get_full_coverage_dates(attendance_day_records):
+    return sorted({
+        record["date"]
+        for record in attendance_day_records.values()
+        if record.get("hasFullDayCoverage")
+    })
 
 
 def write_attendance_day_records(attendance_day_records):
