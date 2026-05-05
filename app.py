@@ -292,13 +292,17 @@ def process_upload(report_rows, students_by_id, report_context):
         ):
             detention_checks_completed += 1
 
-    pending_detention_checks = count_pending_detention_checks()
+    pending_detention_check_dates = summarize_pending_detention_check_dates()
+    pending_detention_checks = sum(
+        item["count"] for item in pending_detention_check_dates
+    )
 
     return {
         "added": new_late_count,
         "detentionsAssigned": detention_assigned_count,
         "detentionChecksCompleted": detention_checks_completed,
         "pendingDetentionChecks": pending_detention_checks,
+        "pendingDetentionCheckDates": pending_detention_check_dates,
         "reportDate": report_date,
         "coversFullDay": report_context.get("coversFullDay", False),
         "latestObservedTime": report_context.get("latestObservedTime"),
@@ -491,6 +495,20 @@ def count_pending_detention_checks(report_date=None):
         if pending_date and (report_date is None or pending_date == report_date):
             pending_count += 1
     return pending_count
+
+
+def summarize_pending_detention_check_dates():
+    pending_by_date = {}
+    for student_snapshot in db.collection("students").stream():
+        active_detention = student_snapshot.to_dict().get("activeDetention") or {}
+        pending_date = active_detention.get("pendingAttendanceCheckDate")
+        if pending_date:
+            pending_by_date[pending_date] = pending_by_date.get(pending_date, 0) + 1
+
+    return [
+        {"date": pending_date, "count": pending_by_date[pending_date]}
+        for pending_date in sorted(pending_by_date)
+    ]
 
 
 def get_pending_detention_check_candidates(full_coverage_dates):
