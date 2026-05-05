@@ -283,11 +283,18 @@ def process_upload(report_rows, students_by_id, report_context):
         reconcile_student_detention_schedule_transaction(student_id)
 
     full_coverage_dates = get_full_coverage_dates(attendance_day_records)
-    pending_detention_candidates = get_pending_detention_check_candidates(full_coverage_dates)
+    full_coverage_date_set = set(full_coverage_dates)
+    pending_detention_candidates = get_pending_detention_check_candidates(full_coverage_date_set)
     for student_id, attendance_date in pending_detention_candidates:
+        attendance_day_record = get_attendance_day_record_for_pending_check(
+            attendance_day_records,
+            full_coverage_date_set,
+            student_id,
+            attendance_date
+        )
         if apply_pending_detention_transaction(
             student_id,
-            attendance_day_records.get((student_id, attendance_date)),
+            attendance_day_record,
             attendance_date
         ):
             detention_checks_completed += 1
@@ -743,6 +750,32 @@ def get_full_coverage_dates(attendance_day_records):
         for record in attendance_day_records.values()
         if record.get("hasFullDayCoverage")
     })
+
+
+def get_attendance_day_record_for_pending_check(
+    attendance_day_records,
+    full_coverage_date_set,
+    student_id,
+    attendance_date
+):
+    attendance_day_record = attendance_day_records.get((student_id, attendance_date))
+    if attendance_date not in full_coverage_date_set:
+        return attendance_day_record
+
+    if attendance_day_record:
+        return {
+            **attendance_day_record,
+            "hasFullDayCoverage": True,
+        }
+
+    return {
+        "studentId": student_id,
+        "date": attendance_date,
+        "presentAtSchool": True,
+        "hasFullDayCoverage": True,
+        "latestObservedTime": None,
+        "rowCount": 0,
+    }
 
 
 def write_attendance_day_records(attendance_day_records):
