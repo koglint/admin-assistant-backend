@@ -53,6 +53,9 @@ ALLOWED_ADMIN_DOMAINS = {
 }
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_PURGE_ENABLED = os.environ.get("ADMIN_PURGE_ENABLED", "false").lower() == "true"
+DETENTION_DURATION_MINUTES = 15
+
+
 @app.route("/")
 def home():
     return "Admin Assistant Flask backend is live!"
@@ -174,6 +177,7 @@ def build_present_attendance_day_record(student_id, date_string):
         "studentId": student_id,
         "date": date_string,
         "presentAtSchool": True,
+        "presentDuringDetention": True,
         "hasFullDayCoverage": True,
         "latestObservedTime": None,
         "rowCount": 0,
@@ -675,11 +679,14 @@ def evaluate_pending_detention(student, attendance_day_record, report_date):
     if not attendance_day_record or not attendance_day_record.get("hasFullDayCoverage"):
         return False
 
-    present_at_school = attendance_day_record.get("presentAtSchool", True)
+    present_during_detention = attendance_day_record.get(
+        "presentDuringDetention",
+        attendance_day_record.get("presentAtSchool", True)
+    )
     active_detention["lastEvaluatedDate"] = report_date
     active_detention["pendingAttendanceCheckDate"] = None
 
-    if present_at_school:
+    if present_during_detention:
         active_detention["missedWhilePresentCount"] = active_detention.get("missedWhilePresentCount", 0) + 1
         student.setdefault("detentionHistory", []).append({
             "date": report_date,
@@ -704,13 +711,13 @@ def update_student_status(student):
     active_detention = student.get("activeDetention") or {}
     active_detention_open = active_detention.get("status") == "open"
     late_count = student.get("lateCount", len(student.get("lateArrivals", [])))
-    missed_count = active_detention.get("missedWhilePresentCount", 0)
+    missed_count = count_current_missed_while_present(student, active_detention)
     suppression = student.get("escalationSuppression", {})
 
     reasons = []
     if student.get("manualEscalation"):
         reasons.append("manual_escalation")
-    if late_count > 5 and late_count > suppression.get("lateCountUntil", 0):
+    if late_count >= 5 and late_count > suppression.get("lateCountUntil", 0):
         reasons.append("late_count_over_five")
     if active_detention_open and missed_count >= 2 and missed_count > suppression.get("missedCountUntil", 0):
         reasons.append("missed_detention_twice")
@@ -726,10 +733,40 @@ def update_student_status(student):
     student["activeDetention"] = active_detention if active_detention_open else None
 
 
+def count_current_missed_while_present(student, active_detention):
+    if not active_detention or active_detention.get("status") != "open":
+        return 0
+
+    history = student.get("detentionHistory", [])
+    if not isinstance(history, list):
+        history = []
+
+    most_recent_served_index = -1
+    for index in range(len(history) - 1, -1, -1):
+        entry = history[index] if isinstance(history[index], dict) else {}
+        if entry.get("outcome") == "served":
+            most_recent_served_index = index
+            break
+
+    unresolved_history = history[most_recent_served_index + 1:]
+    active_late_date = active_detention.get("createdFromLateDate") or ""
+    history_count = 0
+    for entry in unresolved_history:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("outcome") != "missed_while_present":
+            continue
+        if active_late_date and entry.get("lateDate") and entry.get("lateDate") != active_late_date:
+            continue
+        history_count += 1
+
+    return max(history_count, active_detention.get("missedWhilePresentCount", 0))
+
+
 def format_escalation_reasons(reasons):
     labels = {
         "manual_escalation": "Manual escalation",
-        "late_count_over_five": "More than five late arrivals",
+        "late_count_over_five": "Five or more late arrivals",
         "missed_detention_twice": "Missed detention twice while present at school",
     }
 
@@ -773,6 +810,7 @@ def build_attendance_day_records(rows):
             "studentId": student_id,
             "date": date_string,
             "presentAtSchool": determine_present_at_school(student_rows),
+            "presentDuringDetention": determine_present_during_detention(student_rows, date_string),
             "hasFullDayCoverage": latest_observed is not None and latest_observed >= time(14, 45),
             "latestObservedTime": latest_observed.strftime("%I:%M%p") if latest_observed else None,
             "rowCount": len(student_rows),
@@ -847,6 +885,34 @@ def determine_present_at_school(student_rows_for_date):
             return True
 
     return False
+
+
+def determine_present_during_detention(student_rows_for_date, date_string):
+    if not student_rows_for_date:
+        return True
+
+    detention_start = first_break_start_for_date(date_string)
+    detention_end = (
+        datetime.combine(datetime.today(), detention_start)
+        + timedelta(minutes=DETENTION_DURATION_MINUTES)
+    ).time()
+    for row in student_rows_for_date:
+        if is_full_day_absence_row(row):
+            return False
+
+        absence_start = parse_time_value(row.get("timeStart"))
+        absence_end = parse_time_value(row.get("timeEnd"))
+        if not absence_start or not absence_end:
+            continue
+
+        if time_ranges_overlap(absence_start.time(), absence_end.time(), detention_start, detention_end):
+            return False
+
+    return True
+
+
+def time_ranges_overlap(start_a, end_a, start_b, end_b):
+    return start_a < end_b and start_b < end_a
 
 
 def is_full_day_absence_row(row):
