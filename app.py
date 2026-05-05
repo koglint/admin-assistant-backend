@@ -124,6 +124,7 @@ def attendance_days_lookup():
         return jsonify({"status": "error", "message": "pairs must be a list."}), 400
 
     results = {}
+    full_coverage_by_date = {}
     for pair in pairs[:1000]:
         if not isinstance(pair, dict):
             continue
@@ -136,12 +137,47 @@ def attendance_days_lookup():
         doc_id = build_attendance_day_doc_id(student_id, date_string)
         snapshot = db.collection("attendance_days").document(doc_id).get()
         if snapshot.exists:
-            results[doc_id] = snapshot.to_dict()
+            record = snapshot.to_dict()
+            if record.get("hasFullDayCoverage") is not True:
+                if date_string not in full_coverage_by_date:
+                    full_coverage_by_date[date_string] = attendance_date_has_full_day_coverage(date_string)
+                if full_coverage_by_date[date_string]:
+                    record = {**record, "hasFullDayCoverage": True}
+            results[doc_id] = record
+            continue
+
+        if date_string not in full_coverage_by_date:
+            full_coverage_by_date[date_string] = attendance_date_has_full_day_coverage(date_string)
+
+        if full_coverage_by_date[date_string]:
+            results[doc_id] = build_present_attendance_day_record(student_id, date_string)
 
     return jsonify({
         "status": "success",
         "records": results,
     })
+
+
+def attendance_date_has_full_day_coverage(date_string):
+    snapshots = (
+        db.collection("attendance_days")
+        .where("date", "==", date_string)
+        .where("hasFullDayCoverage", "==", True)
+        .limit(1)
+        .stream()
+    )
+    return any(True for _ in snapshots)
+
+
+def build_present_attendance_day_record(student_id, date_string):
+    return {
+        "studentId": student_id,
+        "date": date_string,
+        "presentAtSchool": True,
+        "hasFullDayCoverage": True,
+        "latestObservedTime": None,
+        "rowCount": 0,
+    }
 
 
 def normalize_dataframe(df):
@@ -768,14 +804,7 @@ def get_attendance_day_record_for_pending_check(
             "hasFullDayCoverage": True,
         }
 
-    return {
-        "studentId": student_id,
-        "date": attendance_date,
-        "presentAtSchool": True,
-        "hasFullDayCoverage": True,
-        "latestObservedTime": None,
-        "rowCount": 0,
-    }
+    return build_present_attendance_day_record(student_id, attendance_date)
 
 
 def write_attendance_day_records(attendance_day_records):
