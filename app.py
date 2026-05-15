@@ -54,6 +54,21 @@ ALLOWED_ADMIN_DOMAINS = {
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 ADMIN_PURGE_ENABLED = os.environ.get("ADMIN_PURGE_ENABLED", "false").lower() == "true"
 DETENTION_DURATION_MINUTES = 15
+LATE_ATTENDANCE_CODES = {
+    ("U", "UNJUSTIFIED"),
+    ("?", "ABSENT"),
+}
+EXCLUDED_ATTENDANCE_SHORTHANDS = {"S", "F", "E", "B", "L", "M"}
+EXCLUDED_ATTENDANCE_DESCRIPTIONS = {
+    "SICK",
+    "FLEXIBLE",
+    "SUSPENDED",
+    "SCHOOL BUSINESS",
+    "LEAVE",
+    "EXEMPT",
+}
+ROLL_CALL_START_TIMES = {time(8, 0), time(8, 25)}
+LATE_ARRIVAL_THRESHOLD = time(8, 35)
 
 
 @app.route("/")
@@ -930,16 +945,21 @@ def is_full_day_absence_row(row):
 
 
 def is_roll_call_late(row):
-    shorthand = row["shorthand"].strip().upper()
-    description = row["description"].strip().upper()
-    time_start = row["timeStart"]
-    if time_start not in {"8:00AM", "8:25AM"}:
+    shorthand = normalize_attendance_text(row["shorthand"])
+    description = normalize_attendance_text(row["description"])
+
+    if shorthand in EXCLUDED_ATTENDANCE_SHORTHANDS or description in EXCLUDED_ATTENDANCE_DESCRIPTIONS:
         return False
 
-    return (
-        (shorthand == "U" and description == "UNJUSTIFIED")
-        or (shorthand == "?" and description == "ABSENT")
-    )
+    if (shorthand, description) not in LATE_ATTENDANCE_CODES:
+        return False
+
+    time_start = parse_time_value(row.get("timeStart"))
+    time_end = parse_time_value(row.get("timeEnd"))
+    if not time_start or not time_end:
+        return False
+
+    return time_start.time() in ROLL_CALL_START_TIMES and time_end.time() > LATE_ARRIVAL_THRESHOLD
 
 
 def split_time_range(time_range):
@@ -952,6 +972,10 @@ def split_time_range(time_range):
 
 def normalize_time_text(value):
     return str(value or "").strip().replace(" ", "").upper()
+
+
+def normalize_attendance_text(value):
+    return " ".join(str(value or "").strip().upper().split())
 
 
 def normalize_year_group_text(value):

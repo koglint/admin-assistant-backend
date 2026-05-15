@@ -242,9 +242,12 @@ For each row, the backend:
 2. Converts the date to `YYYY-MM-DD`.
 3. Splits the `Time` range into left and right sides.
 4. Treats a row as a late-to-school row only when:
-   - `Shorthand` is `U` and `Description` is `Unjustified`, or
-   - `Shorthand` is `?` and `Description` is `Absent`
-   - and the left side of the time range starts at `8:00AM` or `8:25AM`
+   - `Shorthand` is not one of `S`, `F`, `E`, `B`, `L`, or `M`
+   - `Description` is not one of `Sick`, `Flexible`, `Suspended`, `School Business`, `Leave`, or `Exempt`
+   - `Shorthand` is `U` and `Description` is `Unjustified`, or `Shorthand` is `?` and `Description` is `Absent`
+   - the `Time` column contains a valid start and end time
+   - the left side of the time range starts at `8:00AM` or `8:25AM`
+   - the right side of the time range is strictly after `8:35AM`
 
 This means the parser is focused specifically on missed roll-call rows rather than every absence in the export.
 
