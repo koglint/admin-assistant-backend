@@ -99,8 +99,12 @@ def admin_purge():
     if payload.get("confirmation", "") != "DELETE":
         return jsonify({"status": "error", "message": "Deletion confirmation text was incorrect."}), 400
 
-    deleted = purge_all_students()
-    return jsonify({"status": "success", "deleted": deleted})
+    deleted_by_collection = purge_firestore_collections(["students", "attendance_days", "uploadTracking"])
+    return jsonify({
+        "status": "success",
+        "deleted": sum(deleted_by_collection.values()),
+        "deletedByCollection": deleted_by_collection,
+    })
 
 
 @app.route("/admin/authorize", methods=["POST"])
@@ -1133,14 +1137,23 @@ def extract_bearer_token(header_value):
     return parts[1].strip()
 
 
-def purge_all_students():
-    students = list(db.collection("students").stream())
+def purge_firestore_collections(collection_names):
+    deleted_by_collection = {}
+
+    for collection_name in collection_names:
+        deleted_by_collection[collection_name] = purge_firestore_collection(collection_name)
+
+    return deleted_by_collection
+
+
+def purge_firestore_collection(collection_name):
+    documents = list(db.collection(collection_name).stream())
     deleted = 0
     batch = db.batch()
     batch_size = 0
 
-    for student_doc in students:
-        batch.delete(student_doc.reference)
+    for document in documents:
+        batch.delete(document.reference)
         batch_size += 1
         deleted += 1
 

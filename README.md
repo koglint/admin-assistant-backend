@@ -155,7 +155,7 @@ Success response:
 
 ### `POST /admin/purge`
 
-This endpoint performs a full delete of the `students` collection.
+This endpoint performs a full delete of the `students`, `attendance_days`, and `uploadTracking` collections.
 
 It is intentionally protected by several checks:
 
@@ -193,7 +193,12 @@ Success response:
 ```json
 {
   "status": "success",
-  "deleted": 123
+  "deleted": 123,
+  "deletedByCollection": {
+    "students": 100,
+    "attendance_days": 20,
+    "uploadTracking": 3
+  }
 }
 ```
 
@@ -409,7 +414,7 @@ curl -X POST http://127.0.0.1:5000/upload -F "file=@attendance.xlsx"
 - The CORS origin must match the deployed frontend domain.
 - Spreadsheet header changes are the most likely reason for parser breakage.
 - Firestore document shape changes should be coordinated with the frontend repo.
-- The secure purge endpoint is the only place that should delete all student records.
+- The secure purge endpoint is the only place that should delete all student, attendance-day, and upload-tracking records.
 
 ## Maintenance Checklist
 
