@@ -356,7 +356,7 @@ Related escalation rules:
 
 - `manualEscalation` adds the `manual_escalation` reason
 - more than 5 late arrivals adds `late_count_over_five`
-- an open detention with `missedWhilePresentCount >= 2` adds `missed_detention_twice`
+- an open detention with two or more confirmed unresolved `missed_while_present` history events adds `missed_detention_twice`
 
 The backend also writes:
 

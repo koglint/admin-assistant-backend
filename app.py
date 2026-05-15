@@ -586,8 +586,11 @@ def get_pending_detention_check_candidates(full_coverage_dates):
     for student_snapshot in db.collection("students").stream():
         active_detention = student_snapshot.to_dict().get("activeDetention") or {}
         pending_date = active_detention.get("pendingAttendanceCheckDate")
+        scheduled_date = active_detention.get("scheduledForDate")
         if pending_date in full_coverage_date_set:
             candidates.append((student_snapshot.id, pending_date))
+        elif scheduled_date in full_coverage_date_set:
+            candidates.append((student_snapshot.id, scheduled_date))
 
     return candidates
 
@@ -692,36 +695,50 @@ def evaluate_pending_detention(student, attendance_day_record, report_date):
     if not active_detention or active_detention.get("status") != "open":
         return False
 
-    if active_detention.get("pendingAttendanceCheckDate") != report_date:
+    pending_date = active_detention.get("pendingAttendanceCheckDate")
+    scheduled_date = active_detention.get("scheduledForDate")
+    if report_date not in {pending_date, scheduled_date}:
         return False
 
     if not attendance_day_record or not attendance_day_record.get("hasFullDayCoverage"):
+        if scheduled_date == report_date and not pending_date:
+            active_detention["pendingAttendanceCheckDate"] = report_date
+            student["activeDetention"] = active_detention
+            return True
         return False
 
-    present_during_detention = attendance_day_record.get(
-        "presentDuringDetention",
-        attendance_day_record.get("presentAtSchool", True)
+    row_count = attendance_day_record.get("rowCount", 0)
+    present_during_detention = row_count == 0
+    evidence = (
+        "no_absence_row_full_day_coverage"
+        if present_during_detention
+        else "absence_row_recorded_not_counted"
     )
+
     active_detention["lastEvaluatedDate"] = report_date
     active_detention["pendingAttendanceCheckDate"] = None
 
     if present_during_detention:
-        active_detention["missedWhilePresentCount"] = active_detention.get("missedWhilePresentCount", 0) + 1
         student.setdefault("detentionHistory", []).append({
             "date": report_date,
             "lateDate": active_detention.get("createdFromLateDate"),
             "scheduledForDate": active_detention.get("scheduledForDate") or report_date,
             "outcome": "missed_while_present",
+            "attendanceEvidence": evidence,
+            "attendanceDayRowCount": row_count,
         })
     else:
         student.setdefault("detentionHistory", []).append({
             "date": report_date,
             "lateDate": active_detention.get("createdFromLateDate"),
             "scheduledForDate": active_detention.get("scheduledForDate") or report_date,
-            "outcome": "absent_from_school",
+            "outcome": "not_counted_absence_recorded",
+            "attendanceEvidence": evidence,
+            "attendanceDayRowCount": row_count,
         })
 
     active_detention["scheduledForDate"] = next_school_day(report_date)
+    active_detention["missedWhilePresentCount"] = count_current_missed_while_present(student, active_detention)
     student["activeDetention"] = active_detention
     return True
 
@@ -779,7 +796,7 @@ def count_current_missed_while_present(student, active_detention):
             continue
         history_count += 1
 
-    return max(history_count, active_detention.get("missedWhilePresentCount", 0))
+    return history_count
 
 
 def format_escalation_reasons(reasons):
@@ -825,12 +842,16 @@ def build_attendance_day_records(rows):
     records = {}
     for (student_id, date_string), student_rows in group_rows_by_student_and_date(rows).items():
         latest_observed = get_latest_observed_time(student_rows)
+        has_full_day_absence = any(is_full_day_absence_row(row) for row in student_rows)
+        has_full_day_coverage = has_full_day_absence or (
+            latest_observed is not None and latest_observed >= time(14, 45)
+        )
         records[(student_id, date_string)] = {
             "studentId": student_id,
             "date": date_string,
             "presentAtSchool": determine_present_at_school(student_rows),
             "presentDuringDetention": determine_present_during_detention(student_rows, date_string),
-            "hasFullDayCoverage": latest_observed is not None and latest_observed >= time(14, 45),
+            "hasFullDayCoverage": has_full_day_coverage,
             "latestObservedTime": latest_observed.strftime("%I:%M%p") if latest_observed else None,
             "rowCount": len(student_rows),
         }
@@ -907,27 +928,7 @@ def determine_present_at_school(student_rows_for_date):
 
 
 def determine_present_during_detention(student_rows_for_date, date_string):
-    if not student_rows_for_date:
-        return True
-
-    detention_start = first_break_start_for_date(date_string)
-    detention_end = (
-        datetime.combine(datetime.today(), detention_start)
-        + timedelta(minutes=DETENTION_DURATION_MINUTES)
-    ).time()
-    for row in student_rows_for_date:
-        if is_full_day_absence_row(row):
-            return False
-
-        absence_start = parse_time_value(row.get("timeStart"))
-        absence_end = parse_time_value(row.get("timeEnd"))
-        if not absence_start or not absence_end:
-            continue
-
-        if time_ranges_overlap(absence_start.time(), absence_end.time(), detention_start, detention_end):
-            return False
-
-    return True
+    return not student_rows_for_date
 
 
 def time_ranges_overlap(start_a, end_a, start_b, end_b):
