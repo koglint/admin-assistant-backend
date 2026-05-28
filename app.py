@@ -69,6 +69,12 @@ EXCLUDED_ATTENDANCE_DESCRIPTIONS = {
 }
 ROLL_CALL_START_TIMES = {time(8, 0), time(8, 25)}
 LATE_ARRIVAL_THRESHOLD = time(8, 35)
+UPLOAD_MODE_LATE_ARRIVALS = "late_arrivals"
+UPLOAD_MODE_ATTENDANCE_CONFIRMATION = "attendance_confirmation"
+UPLOAD_MODES = {
+    UPLOAD_MODE_LATE_ARRIVALS,
+    UPLOAD_MODE_ATTENDANCE_CONFIRMATION,
+}
 
 
 @app.route("/")
@@ -98,7 +104,8 @@ def upload():
         report_date = get_report_date(report_rows)
         report_context = build_report_context(report_rows, report_date)
         students_by_id = load_existing_students()
-        summary = process_upload(report_rows, students_by_id, report_context)
+        upload_mode = normalize_upload_mode(request.form.get("uploadMode"))
+        summary = process_upload(report_rows, students_by_id, report_context, upload_mode)
         return jsonify({"status": "success", **summary})
     except Exception as exc:
         traceback.print_exc()
@@ -315,16 +322,32 @@ def load_existing_students():
     }
 
 
-def process_upload(report_rows, students_by_id, report_context):
+def normalize_upload_mode(upload_mode):
+    upload_mode = str(upload_mode or "").strip()
+    if upload_mode in UPLOAD_MODES:
+        return upload_mode
+    return UPLOAD_MODE_LATE_ARRIVALS
+
+
+def process_upload(report_rows, students_by_id, report_context, upload_mode=UPLOAD_MODE_LATE_ARRIVALS):
     report_date = report_context.get("reportDate")
-    late_rows = [row for row in report_rows if is_roll_call_late(row)]
+    process_late_arrivals = upload_mode == UPLOAD_MODE_LATE_ARRIVALS
+    late_rows = [row for row in report_rows if is_roll_call_late(row)] if process_late_arrivals else []
     attendance_day_records = build_attendance_day_records(report_rows)
 
     write_attendance_day_records(attendance_day_records)
 
     new_late_count = 0
     detention_assigned_count = 0
-    detention_checks_completed = 0
+    detention_stats = {
+        "completed": 0,
+        "missedWhilePresent": 0,
+        "notCountedAbsenceRecorded": 0,
+        "rolledForward": 0,
+        "markedPending": 0,
+        "matched": 0,
+        "passes": 0,
+    }
 
     late_rows_by_student = {}
     for late_row in late_rows:
@@ -338,25 +361,13 @@ def process_upload(report_rows, students_by_id, report_context):
         new_late_count += late_added
         detention_assigned_count += detentions_assigned
 
-    for student_id in students_by_id.keys():
-        reconcile_student_detention_schedule_transaction(student_id)
+    if process_late_arrivals:
+        for student_id in students_by_id.keys():
+            reconcile_student_detention_schedule_transaction(student_id)
 
     full_coverage_dates = get_full_coverage_dates(attendance_day_records)
-    full_coverage_date_set = set(full_coverage_dates)
-    pending_detention_candidates = get_pending_detention_check_candidates(full_coverage_date_set)
-    for student_id, attendance_date in pending_detention_candidates:
-        attendance_day_record = get_attendance_day_record_for_pending_check(
-            attendance_day_records,
-            full_coverage_date_set,
-            student_id,
-            attendance_date
-        )
-        if apply_pending_detention_transaction(
-            student_id,
-            attendance_day_record,
-            attendance_date
-        ):
-            detention_checks_completed += 1
+    if full_coverage_dates:
+        detention_stats = process_detention_attendance_checks(attendance_day_records, full_coverage_dates)
 
     pending_detention_check_dates = summarize_pending_detention_check_dates()
     pending_detention_checks = sum(
@@ -366,14 +377,21 @@ def process_upload(report_rows, students_by_id, report_context):
     return {
         "added": new_late_count,
         "detentionsAssigned": detention_assigned_count,
-        "detentionChecksCompleted": detention_checks_completed,
+        "detentionChecksCompleted": detention_stats["completed"],
+        "detentionChecksMatched": detention_stats["matched"],
+        "missedDetentionsConfirmed": detention_stats["missedWhilePresent"],
+        "detentionAbsencesNotCounted": detention_stats["notCountedAbsenceRecorded"],
+        "detentionsRolledForward": detention_stats["rolledForward"],
+        "detentionChecksMarkedPending": detention_stats["markedPending"],
+        "detentionCheckPasses": detention_stats["passes"],
         "pendingDetentionChecks": pending_detention_checks,
         "pendingDetentionCheckDates": pending_detention_check_dates,
         "reportDate": report_date,
         "coversFullDay": report_context.get("coversFullDay", False),
         "latestObservedTime": report_context.get("latestObservedTime"),
         "attendanceDatesChecked": len(full_coverage_dates),
-        "detentionChecksMatched": len(pending_detention_candidates),
+        "uploadMode": upload_mode,
+        "lateProcessingSkipped": not process_late_arrivals,
     }
 
 
@@ -520,13 +538,14 @@ def apply_pending_detention_transaction(student_id, attendance_day_record, repor
             return False
 
         student = clone_student(snapshot.to_dict())
-        if not evaluate_pending_detention(student, attendance_day_record, report_date):
-            return False
+        result = evaluate_pending_detention(student, attendance_day_record, report_date)
+        if not result:
+            return None
 
         update_student_status(student)
         apply_audit_fields(student, "backend_detention_attendance_evaluated", "backend_upload")
         transaction_obj.set(student_ref, student)
-        return True
+        return result
 
     return _apply(transaction)
 
@@ -593,6 +612,58 @@ def get_pending_detention_check_candidates(full_coverage_dates):
             candidates.append((student_snapshot.id, scheduled_date))
 
     return candidates
+
+
+def process_detention_attendance_checks(attendance_day_records, full_coverage_dates):
+    full_coverage_date_set = set(full_coverage_dates)
+    stats = {
+        "completed": 0,
+        "missedWhilePresent": 0,
+        "notCountedAbsenceRecorded": 0,
+        "rolledForward": 0,
+        "markedPending": 0,
+        "matched": 0,
+        "passes": 0,
+    }
+    max_passes = max(1, len(full_coverage_dates) + 5)
+
+    for _ in range(max_passes):
+        candidates = get_pending_detention_check_candidates(full_coverage_date_set)
+        stats["matched"] += len(candidates)
+        stats["passes"] += 1
+        changed_this_pass = 0
+
+        for student_id, attendance_date in candidates:
+            attendance_day_record = get_attendance_day_record_for_pending_check(
+                attendance_day_records,
+                full_coverage_date_set,
+                student_id,
+                attendance_date
+            )
+            result = apply_pending_detention_transaction(
+                student_id,
+                attendance_day_record,
+                attendance_date
+            )
+            if not result:
+                continue
+
+            changed_this_pass += 1
+            if result.get("completed"):
+                stats["completed"] += 1
+            if result.get("missedWhilePresent"):
+                stats["missedWhilePresent"] += 1
+            if result.get("notCountedAbsenceRecorded"):
+                stats["notCountedAbsenceRecorded"] += 1
+            if result.get("rolledForward"):
+                stats["rolledForward"] += 1
+            if result.get("markedPending"):
+                stats["markedPending"] += 1
+
+        if changed_this_pass == 0:
+            break
+
+    return stats
 
 
 def apply_audit_fields(student, action, actor):
@@ -693,19 +764,25 @@ def reconcile_active_detention_from_history(student):
 def evaluate_pending_detention(student, attendance_day_record, report_date):
     active_detention = student.get("activeDetention")
     if not active_detention or active_detention.get("status") != "open":
-        return False
+        return None
 
     pending_date = active_detention.get("pendingAttendanceCheckDate")
     scheduled_date = active_detention.get("scheduledForDate")
     if report_date not in {pending_date, scheduled_date}:
-        return False
+        return None
 
     if not attendance_day_record or not attendance_day_record.get("hasFullDayCoverage"):
         if scheduled_date == report_date and not pending_date:
             active_detention["pendingAttendanceCheckDate"] = report_date
             student["activeDetention"] = active_detention
-            return True
-        return False
+            return {
+                "completed": False,
+                "missedWhilePresent": False,
+                "notCountedAbsenceRecorded": False,
+                "rolledForward": False,
+                "markedPending": True,
+            }
+        return None
 
     row_count = attendance_day_record.get("rowCount", 0)
     present_during_detention = row_count == 0
@@ -740,7 +817,13 @@ def evaluate_pending_detention(student, attendance_day_record, report_date):
     active_detention["scheduledForDate"] = next_school_day(report_date)
     active_detention["missedWhilePresentCount"] = count_current_missed_while_present(student, active_detention)
     student["activeDetention"] = active_detention
-    return True
+    return {
+        "completed": True,
+        "missedWhilePresent": present_during_detention,
+        "notCountedAbsenceRecorded": not present_during_detention,
+        "rolledForward": True,
+        "markedPending": False,
+    }
 
 
 def update_student_status(student):

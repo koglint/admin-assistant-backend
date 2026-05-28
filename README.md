@@ -136,6 +136,7 @@ Content-Type: multipart/form-data
 Form fields:
 
 - `file`: the attendance spreadsheet
+- `uploadMode`: optional. Use `late_arrivals` for the normal morning upload or `attendance_confirmation` for full-day/weekly confirmation data. Defaults to `late_arrivals`.
 
 Basic validation:
 
@@ -149,7 +150,11 @@ Success response:
 ```json
 {
   "status": "success",
-  "added": 12
+  "added": 12,
+  "detentionsAssigned": 4,
+  "detentionChecksCompleted": 3,
+  "missedDetentionsConfirmed": 2,
+  "uploadMode": "late_arrivals"
 }
 ```
 
@@ -270,13 +275,19 @@ If time parsing fails, `arrivalTime` and `minutesLate` remain `None`.
 
 ## Upload Processing Model
 
-Each uploaded spreadsheet is treated as another snapshot of the same report date, and the backend derives what to do from the data inside that file:
+The upload route supports two modes:
+
+- `late_arrivals`: normal morning workflow. Records late arrivals, assigns/reconciles detentions, writes attendance-day records, and resolves any detention checks supported by the uploaded data.
+- `attendance_confirmation`: confirmation workflow. Writes attendance-day records and resolves missed detention checks, but does not add late arrivals or assign new detentions.
+
+Repeated uploads are allowed:
 
 - a student can be uploaded multiple times on the same date without creating duplicate late records
 - only one active detention is allowed at a time
 - same-day versus next-day detention is decided from the student arrival time in the spreadsheet
-- repeated uploads for the same report date can add new late arrivals discovered later in the day
-- detention absences marked on the roll stay pending until a later upload for that date appears to include enough day coverage to resolve whether the student attended school at all
+- repeated `late_arrivals` uploads for the same report date can add new late arrivals discovered later in the day
+- `attendance_confirmation` uploads can contain full-day or weekly data and can catch up open detention checks across uploaded dates
+- detention absences marked on the roll stay pending until an upload for that detention date has enough coverage to resolve whether the student attended school
 
 Scheduling rule:
 
