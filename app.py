@@ -121,9 +121,63 @@ def admin_purge():
     if payload.get("confirmation", "") != "DELETE":
         return jsonify({"status": "error", "message": "Deletion confirmation text was incorrect."}), 400
 
-    deleted_by_collection = purge_firestore_collections(["students", "attendance_days", "uploadTracking"])
+    deleted_by_collection = purge_firestore_collections(["students", "attendance_days", "uploadTracking", "student_exceptions"])
     return jsonify({
         "status": "success",
+        "deleted": sum(deleted_by_collection.values()),
+        "deletedByCollection": deleted_by_collection,
+    })
+
+
+@app.route("/admin/student-purge", methods=["POST"])
+def admin_student_purge():
+    payload, error_response = verify_admin_request(require_purge_enabled=False)
+    if error_response:
+        return error_response
+
+    student_id = normalize_student_id(payload.get("studentId"))
+    if not student_id:
+        return jsonify({"status": "error", "message": "Student ID is required."}), 400
+
+    if payload.get("confirmation", "") != student_id:
+        return jsonify({"status": "error", "message": "Student ID confirmation was incorrect."}), 400
+
+    deleted_by_collection = purge_student_records(student_id)
+    return jsonify({
+        "status": "success",
+        "studentId": student_id,
+        "deleted": sum(deleted_by_collection.values()),
+        "deletedByCollection": deleted_by_collection,
+    })
+
+
+@app.route("/admin/student-exception", methods=["POST"])
+def admin_student_exception():
+    payload, error_response = verify_admin_request(require_purge_enabled=False)
+    if error_response:
+        return error_response
+
+    student_id = normalize_student_id(payload.get("studentId"))
+    if not student_id:
+        return jsonify({"status": "error", "message": "Student ID is required."}), 400
+
+    if payload.get("confirmation", "") != student_id:
+        return jsonify({"status": "error", "message": "Student ID confirmation was incorrect."}), 400
+
+    deleted_by_collection = purge_student_records(student_id, keep_exception=True)
+    db.collection("student_exceptions").document(student_id).set({
+        "studentId": student_id,
+        "reason": str(payload.get("reason", "")).strip(),
+        "createdAt": firestore.SERVER_TIMESTAMP,
+        "createdBy": "admin_backend",
+        "updatedAt": firestore.SERVER_TIMESTAMP,
+        "updatedBy": "admin_backend",
+        "lastAction": "student_added_to_exception_list",
+    }, merge=True)
+
+    return jsonify({
+        "status": "success",
+        "studentId": student_id,
         "deleted": sum(deleted_by_collection.values()),
         "deletedByCollection": deleted_by_collection,
     })
@@ -154,6 +208,7 @@ def attendance_days_lookup():
 
     results = {}
     full_coverage_by_date = {}
+    exception_ids = load_exception_student_ids()
     for pair in pairs[:1000]:
         if not isinstance(pair, dict):
             continue
@@ -161,6 +216,8 @@ def attendance_days_lookup():
         student_id = str(pair.get("studentId", "")).strip()
         date_string = str(pair.get("date", "")).strip()
         if not student_id or not date_string:
+            continue
+        if student_id in exception_ids:
             continue
 
         doc_id = build_attendance_day_doc_id(student_id, date_string)
@@ -316,9 +373,18 @@ def build_report_rows(df):
 
 
 def load_existing_students():
+    exception_ids = load_exception_student_ids()
     return {
         doc_snapshot.id: doc_snapshot.to_dict()
         for doc_snapshot in db.collection("students").stream()
+        if doc_snapshot.id not in exception_ids
+    }
+
+
+def load_exception_student_ids():
+    return {
+        doc_snapshot.id
+        for doc_snapshot in db.collection("student_exceptions").stream()
     }
 
 
@@ -331,6 +397,8 @@ def normalize_upload_mode(upload_mode):
 
 def process_upload(report_rows, students_by_id, report_context, upload_mode=UPLOAD_MODE_LATE_ARRIVALS):
     report_date = report_context.get("reportDate")
+    exception_ids = load_exception_student_ids()
+    report_rows = [row for row in report_rows if row["studentId"] not in exception_ids]
     process_late_arrivals = upload_mode == UPLOAD_MODE_LATE_ARRIVALS
     late_rows = [row for row in report_rows if is_roll_call_late(row)] if process_late_arrivals else []
     attendance_day_records = build_attendance_day_records(report_rows)
@@ -1243,6 +1311,57 @@ def extract_bearer_token(header_value):
         return None
 
     return parts[1].strip()
+
+
+def normalize_student_id(value):
+    return str(value or "").strip()
+
+
+def purge_student_records(student_id, keep_exception=False):
+    deleted_by_collection = {
+        "students": 0,
+        "attendance_days": 0,
+        "student_exceptions": 0,
+    }
+
+    student_ref = db.collection("students").document(student_id)
+    if student_ref.get().exists:
+        student_ref.delete()
+        deleted_by_collection["students"] = 1
+
+    deleted_by_collection["attendance_days"] = purge_query_documents(
+        db.collection("attendance_days").where("studentId", "==", student_id)
+    )
+
+    if not keep_exception:
+        exception_ref = db.collection("student_exceptions").document(student_id)
+        if exception_ref.get().exists:
+            exception_ref.delete()
+            deleted_by_collection["student_exceptions"] = 1
+
+    return deleted_by_collection
+
+
+def purge_query_documents(query):
+    documents = list(query.stream())
+    deleted = 0
+    batch = db.batch()
+    batch_size = 0
+
+    for document in documents:
+        batch.delete(document.reference)
+        batch_size += 1
+        deleted += 1
+
+        if batch_size >= 450:
+            batch.commit()
+            batch = db.batch()
+            batch_size = 0
+
+    if batch_size:
+        batch.commit()
+
+    return deleted
 
 
 def purge_firestore_collections(collection_names):
