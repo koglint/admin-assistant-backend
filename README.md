@@ -8,7 +8,7 @@ This service is designed to run on Render and be called by the static frontend h
 
 This backend is the rules engine for the whole Attendance Assistant app.
 
-It accepts Sentral attendance exports, identifies which rows count as late-to-school cases, calculates arrival times and minutes late, creates or updates student records in Firestore, manages detention assignment and detention follow-up state, recalculates escalation status and escalation causes, and exposes the protected admin purge endpoint.
+It accepts Sentral attendance exports, identifies which rows count as late-to-school cases, calculates arrival times and minutes late, creates or updates student records in Firestore, manages detention assignment and detention follow-up state, recalculates resolution status, and exposes the protected admin purge endpoint.
 
 In practice:
 
@@ -316,13 +316,6 @@ When a new student is first seen, the backend creates a document with fields lik
 - `detentionHistory`
 - `activeDetention`
 - `notes`
-- `escalated`
-- `escalationReasons`
-- `escalationCause`
-- `lastEscalationReasons`
-- `lastEscalationCause`
-- `manualEscalation`
-- `escalationSuppression`
 
 Each truancy record includes:
 
@@ -361,19 +354,7 @@ Current rules:
 - if `activeDetention.status == "open"`, the student is treated as unresolved and `truancyResolved` becomes `false`
 - if there is no open active detention, `truancyResolved` becomes `true`
 
-This calculation happens in the backend status update logic alongside escalation recalculation.
-
-Related escalation rules:
-
-- `manualEscalation` adds the `manual_escalation` reason
-- more than 5 late arrivals adds `late_count_over_five`
-- an open detention with two or more confirmed unresolved `missed_while_present` history events adds `missed_detention_twice`
-
-The backend also writes:
-
-- `escalationReasons`: machine-readable reason list
-- `escalationCause`: readable text for frontend display and exports
-- `lastEscalationReasons` / `lastEscalationCause`: most recent escalation cause retained for reference
+This calculation happens in the backend status update logic after upload and detention-attendance processing.
 
 ## Local Development
 
