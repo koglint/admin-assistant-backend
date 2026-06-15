@@ -475,8 +475,7 @@ def clone_student(existing_student, source_row=None):
                 student["rollClass"] = source_row.get("rollClass", student.get("rollClass", ""))
             if source_row.get("yearGroup"):
                 student["yearGroup"] = source_row.get("yearGroup", student.get("yearGroup", ""))
-        student["lateArrivals"] = list(existing_student.get("lateArrivals", existing_student.get("truancies", [])))
-        student["truancies"] = list(student["lateArrivals"])
+        student["lateArrivals"] = list(existing_student.get("lateArrivals", []))
         student["detentionHistory"] = list(existing_student.get("detentionHistory", []))
         student["activeDetention"] = dict(existing_student.get("activeDetention", {})) if existing_student.get("activeDetention") else None
         if not student["activeDetention"] and existing_student.get("truancyResolved") is False and student["lateArrivals"]:
@@ -500,9 +499,7 @@ def clone_student(existing_student, source_row=None):
         "rollClass": source_row.get("rollClass", "") if source_row else "",
         "yearGroup": source_row.get("yearGroup", "") if source_row else "",
         "lateArrivals": [],
-        "truancies": [],
         "lateCount": 0,
-        "truancyCount": 0,
         "detentionsServed": 0,
         "detentionHistory": [],
         "activeDetention": None,
@@ -540,9 +537,7 @@ def add_late_arrival(student, late_row):
     existing_late_arrivals.sort(key=lambda item: item["date"], reverse=True)
 
     student["lateArrivals"] = existing_late_arrivals
-    student["truancies"] = existing_late_arrivals
     student["lateCount"] = len(existing_late_arrivals)
-    student["truancyCount"] = len(existing_late_arrivals)
     return True
 
 

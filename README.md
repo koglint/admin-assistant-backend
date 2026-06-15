@@ -30,7 +30,7 @@ The service is responsible for:
 - accepting uploaded `.xls` and `.xlsx` files
 - reading the spreadsheet with pandas
 - identifying rows that represent lateness or unjustified attendance issues
-- converting those rows into truancy records
+- converting those rows into late-arrival records
 - creating or updating student documents in Firestore
 - securely performing the admin purge action on the server
 
@@ -308,16 +308,14 @@ When a new student is first seen, the backend creates a document with fields lik
 - `rollClass`
 - `yearGroup`
 - `lateArrivals`
-- `truancyCount`
 - `lateCount`
 - `truancyResolved`
-- `truancies`
 - `detentionsServed`
 - `detentionHistory`
 - `activeDetention`
 - `notes`
 
-Each truancy record includes:
+Each late-arrival record includes:
 
 ```json
 {
@@ -336,14 +334,14 @@ Each truancy record includes:
 
 ## Duplicate Handling
 
-For existing students, the backend checks whether a truancy already exists for the same date before appending a new one.
+For existing students, the backend checks whether a late-arrival record already exists for the same date before appending a new one.
 
 Current behavior:
 
-- if a matching date already exists, no new truancy is added
-- if the date is new, the truancy is appended and the list is re-sorted newest first
+- if a matching date already exists, no new late-arrival record is added
+- if the date is new, the late-arrival record is appended and the list is re-sorted newest first
 
-This is a simple duplicate rule. If multiple distinct truancies can happen on the same day and need to be preserved separately, the duplicate logic would need to become more specific.
+This is a simple duplicate rule. If multiple distinct late-arrival records can happen on the same day and need to be preserved separately, the duplicate logic would need to become more specific.
 
 ## Resolution Logic
 
