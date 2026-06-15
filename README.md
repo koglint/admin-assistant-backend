@@ -309,7 +309,6 @@ When a new student is first seen, the backend creates a document with fields lik
 - `yearGroup`
 - `lateArrivals`
 - `lateCount`
-- `truancyResolved`
 - `detentionsServed`
 - `detentionHistory`
 - `activeDetention`
@@ -345,14 +344,14 @@ This is a simple duplicate rule. If multiple distinct late-arrival records can h
 
 ## Resolution Logic
 
-The backend resolves current status from the student's live detention state.
+The app resolves current status from the student's live detention state.
 
 Current rules:
 
-- if `activeDetention.status == "open"`, the student is treated as unresolved and `truancyResolved` becomes `false`
-- if there is no open active detention, `truancyResolved` becomes `true`
+- if `activeDetention.status == "open"`, the student is treated as unresolved
+- if there is no open active detention, the student is treated as resolved
 
-This calculation happens in the backend status update logic after upload and detention-attendance processing.
+The backend normalizes `activeDetention` after upload and detention-attendance processing. The frontend derives resolved/pending display state from that field.
 
 ## Local Development
 

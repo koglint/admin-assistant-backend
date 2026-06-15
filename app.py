@@ -478,19 +478,6 @@ def clone_student(existing_student, source_row=None):
         student["lateArrivals"] = list(existing_student.get("lateArrivals", []))
         student["detentionHistory"] = list(existing_student.get("detentionHistory", []))
         student["activeDetention"] = dict(existing_student.get("activeDetention", {})) if existing_student.get("activeDetention") else None
-        if not student["activeDetention"] and existing_student.get("truancyResolved") is False and student["lateArrivals"]:
-            latest_late = sorted(student["lateArrivals"], key=lambda item: item.get("date", ""), reverse=True)[0]
-            student["activeDetention"] = {
-                "status": "open",
-                "createdFromLateDate": latest_late.get("date"),
-                "scheduledForDate": latest_late.get("date"),
-                "sourceContext": "legacy_migration",
-                "createdAt": datetime.now(SYDNEY_TZ).isoformat(),
-                "lastRollMark": None,
-                "lastRollMarkedAt": None,
-                "pendingAttendanceCheckDate": None,
-                "missedWhilePresentCount": 0,
-            }
         return student
 
     return {
@@ -877,7 +864,6 @@ def evaluate_pending_detention(student, attendance_day_record, report_date):
 def update_student_status(student):
     active_detention = student.get("activeDetention") or {}
     active_detention_open = active_detention.get("status") == "open"
-    student["truancyResolved"] = not active_detention_open
     student["activeDetention"] = active_detention if active_detention_open else None
 
 
