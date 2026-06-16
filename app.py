@@ -475,7 +475,7 @@ def clone_student(existing_student, source_row=None):
                 student["rollClass"] = source_row.get("rollClass", student.get("rollClass", ""))
             if source_row.get("yearGroup"):
                 student["yearGroup"] = source_row.get("yearGroup", student.get("yearGroup", ""))
-        student["lateArrivals"] = list(existing_student.get("lateArrivals", []))
+        student["lateArrivals"] = sanitize_late_arrivals(existing_student.get("lateArrivals", []))
         student["detentionHistory"] = list(existing_student.get("detentionHistory", []))
         student["activeDetention"] = dict(existing_student.get("activeDetention", {})) if existing_student.get("activeDetention") else None
         return student
@@ -509,16 +509,10 @@ def add_late_arrival(student, late_row):
     existing_late_arrivals.append({
         "date": late_row["date"],
         "description": late_row["description"],
-        "comment": late_row["comment"],
         "justified": False,
-        "resolved": False,
-        "explainer": late_row["explainer"],
-        "explainerSource": late_row["explainerSource"],
-        "detentionIssued": False,
         "arrivalTime": arrival_time_text or None,
         "minutesLate": minutes_late,
         "shorthand": late_row["shorthand"],
-        "timeRange": late_row["timeRange"],
         "yearGroup": late_row.get("yearGroup"),
     })
     existing_late_arrivals.sort(key=lambda item: item["date"], reverse=True)
@@ -526,6 +520,26 @@ def add_late_arrival(student, late_row):
     student["lateArrivals"] = existing_late_arrivals
     student["lateCount"] = len(existing_late_arrivals)
     return True
+
+
+def sanitize_late_arrivals(late_arrivals):
+    if not isinstance(late_arrivals, list):
+        return []
+
+    allowed_fields = {
+        "date",
+        "description",
+        "justified",
+        "arrivalTime",
+        "minutesLate",
+        "shorthand",
+        "yearGroup",
+    }
+    return [
+        {key: value for key, value in entry.items() if key in allowed_fields}
+        for entry in late_arrivals
+        if isinstance(entry, dict)
+    ]
 
 
 def apply_late_rows_transaction(student_id, late_rows):

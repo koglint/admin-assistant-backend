@@ -320,14 +320,11 @@ Each late-arrival record includes:
 {
   "date": "2026-03-31",
   "description": "unjustified late arrival",
-  "comment": "",
   "justified": false,
-  "resolved": false,
-  "explainer": "",
-  "explainerSource": "",
-  "detentionIssued": false,
   "arrivalTime": "09:04",
-  "minutesLate": 29
+  "minutesLate": 29,
+  "shorthand": "U",
+  "yearGroup": "10"
 }
 ```
 
