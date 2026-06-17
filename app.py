@@ -407,16 +407,6 @@ def process_upload(report_rows, students_by_id, report_context, upload_mode=UPLO
 
     new_late_count = 0
     detention_assigned_count = 0
-    detention_stats = {
-        "completed": 0,
-        "missedWhilePresent": 0,
-        "notCountedAbsenceRecorded": 0,
-        "rolledForward": 0,
-        "markedPending": 0,
-        "matched": 0,
-        "passes": 0,
-    }
-
     late_rows_by_student = {}
     for late_row in late_rows:
         late_rows_by_student.setdefault(late_row["studentId"], []).append(late_row)
@@ -429,31 +419,14 @@ def process_upload(report_rows, students_by_id, report_context, upload_mode=UPLO
         new_late_count += late_added
         detention_assigned_count += detentions_assigned
 
-    if process_late_arrivals:
-        for student_id in students_by_id.keys():
-            reconcile_student_detention_schedule_transaction(student_id)
-
     full_coverage_dates = get_full_coverage_dates(attendance_day_records)
-    if full_coverage_dates:
-        detention_stats = process_detention_attendance_checks(attendance_day_records, full_coverage_dates)
-
-    pending_detention_check_dates = summarize_pending_detention_check_dates()
-    pending_detention_checks = sum(
-        item["count"] for item in pending_detention_check_dates
-    )
+    # Detention debt is now ledger-based. Attendance confirmation uploads still
+    # write attendance-day evidence, but they no longer resolve or roll
+    # detention obligations.
 
     return {
         "added": new_late_count,
         "detentionsAssigned": detention_assigned_count,
-        "detentionChecksCompleted": detention_stats["completed"],
-        "detentionChecksMatched": detention_stats["matched"],
-        "missedDetentionsConfirmed": detention_stats["missedWhilePresent"],
-        "detentionAbsencesNotCounted": detention_stats["notCountedAbsenceRecorded"],
-        "detentionsRolledForward": detention_stats["rolledForward"],
-        "detentionChecksMarkedPending": detention_stats["markedPending"],
-        "detentionCheckPasses": detention_stats["passes"],
-        "pendingDetentionChecks": pending_detention_checks,
-        "pendingDetentionCheckDates": pending_detention_check_dates,
         "reportDate": report_date,
         "coversFullDay": report_context.get("coversFullDay", False),
         "latestObservedTime": report_context.get("latestObservedTime"),
@@ -477,7 +450,10 @@ def clone_student(existing_student, source_row=None):
                 student["yearGroup"] = source_row.get("yearGroup", student.get("yearGroup", ""))
         student["lateArrivals"] = sanitize_late_arrivals(existing_student.get("lateArrivals", []))
         student["detentionHistory"] = list(existing_student.get("detentionHistory", []))
-        student["activeDetention"] = dict(existing_student.get("activeDetention", {})) if existing_student.get("activeDetention") else None
+        student["detentions"] = sanitize_detentions(existing_student.get("detentions", []))
+        student["detentionServedEvents"] = get_detention_served_events_for_migration(existing_student)
+        migrate_active_detention_to_ledger(student, existing_student.get("activeDetention"))
+        update_student_status(student)
         return student
 
     return {
@@ -489,6 +465,9 @@ def clone_student(existing_student, source_row=None):
         "lateCount": 0,
         "detentionsServed": 0,
         "detentionHistory": [],
+        "detentions": [],
+        "detentionServedEvents": [],
+        "detentionStatus": build_detention_status([], []),
         "activeDetention": None,
         "notes": "",
     }
@@ -542,6 +521,142 @@ def sanitize_late_arrivals(late_arrivals):
     ]
 
 
+def sanitize_detentions(detentions):
+    if not isinstance(detentions, list):
+        return []
+
+    allowed_fields = {
+        "detentionId",
+        "sourceLateDate",
+        "originalScheduledForDate",
+        "createdAt",
+        "createdBy",
+        "sourceContext",
+    }
+    sanitized = []
+    seen_ids = set()
+    for entry in detentions:
+        if not isinstance(entry, dict):
+            continue
+        item = {key: value for key, value in entry.items() if key in allowed_fields}
+        detention_id = item.get("detentionId")
+        if not detention_id:
+            source_late_date = item.get("sourceLateDate")
+            detention_id = f"legacy_{source_late_date}" if source_late_date else None
+            item["detentionId"] = detention_id
+        if not detention_id or detention_id in seen_ids:
+            continue
+        seen_ids.add(detention_id)
+        sanitized.append(item)
+
+    sanitized.sort(key=lambda item: item.get("originalScheduledForDate") or item.get("sourceLateDate") or "")
+    return sanitized
+
+
+def sanitize_detention_served_events(events):
+    if not isinstance(events, list):
+        return []
+
+    allowed_fields = {
+        "servedDate",
+        "markedAt",
+        "markedBy",
+        "source",
+    }
+    sanitized = []
+    seen = set()
+    for entry in events:
+        if not isinstance(entry, dict):
+            continue
+        item = {key: value for key, value in entry.items() if key in allowed_fields}
+        served_date = item.get("servedDate")
+        if not served_date:
+            continue
+        dedupe_key = (served_date, item.get("markedAt"), item.get("markedBy"))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        sanitized.append(item)
+
+    sanitized.sort(key=lambda item: (item.get("servedDate") or "", item.get("markedAt") or ""))
+    return sanitized
+
+
+def get_detention_served_events_for_migration(student):
+    explicit_events = sanitize_detention_served_events(student.get("detentionServedEvents", []))
+    if explicit_events:
+        return explicit_events
+
+    history = student.get("detentionHistory", [])
+    if not isinstance(history, list):
+        return []
+
+    legacy_events = []
+    for entry in history:
+        if not isinstance(entry, dict) or entry.get("outcome") != "served":
+            continue
+        served_date = entry.get("date") or entry.get("scheduledForDate")
+        if not served_date:
+            continue
+        legacy_events.append({
+            "servedDate": served_date,
+            "markedAt": served_date,
+            "markedBy": "legacy_detention_history",
+            "source": "legacy_detention_history",
+        })
+
+    return sanitize_detention_served_events(legacy_events)
+
+
+def migrate_active_detention_to_ledger(student, active_detention):
+    if not isinstance(active_detention, dict) or active_detention.get("status") != "open":
+        student["activeDetention"] = None
+        return
+
+    source_late_date = active_detention.get("createdFromLateDate")
+    scheduled_date = active_detention.get("scheduledForDate")
+    if not source_late_date and not scheduled_date:
+        student["activeDetention"] = None
+        return
+
+    detention_id = build_detention_id(source_late_date or scheduled_date)
+    detentions = student.setdefault("detentions", [])
+    if not any(entry.get("detentionId") == detention_id for entry in detentions if isinstance(entry, dict)):
+        detentions.append({
+            "detentionId": detention_id,
+            "sourceLateDate": source_late_date or scheduled_date,
+            "originalScheduledForDate": scheduled_date or source_late_date,
+            "createdAt": active_detention.get("createdAt") or datetime.now(SYDNEY_TZ).isoformat(),
+            "createdBy": "legacy_active_detention_migration",
+            "sourceContext": active_detention.get("sourceContext") or "legacy_active_detention",
+        })
+
+    student["activeDetention"] = None
+
+
+def build_detention_id(source_late_date):
+    return str(source_late_date or "").replace("/", "-")
+
+
+def add_detention_entry(student, late_row, scheduled_date):
+    detentions = student.setdefault("detentions", [])
+    detention_id = build_detention_id(late_row["date"])
+    if any(entry.get("detentionId") == detention_id for entry in detentions if isinstance(entry, dict)):
+        return False
+
+    detentions.append({
+        "detentionId": detention_id,
+        "sourceLateDate": late_row["date"],
+        "originalScheduledForDate": scheduled_date,
+        "createdAt": datetime.now(SYDNEY_TZ).isoformat(),
+        "createdBy": "backend_upload",
+        "sourceContext": build_detention_source_context(late_row, scheduled_date),
+    })
+    detentions.sort(key=lambda item: item.get("originalScheduledForDate") or item.get("sourceLateDate") or "")
+    student["detentions"] = detentions
+    return True
+
+
 def apply_late_rows_transaction(student_id, late_rows):
     transaction = db.transaction()
     student_ref = db.collection("students").document(student_id)
@@ -558,12 +673,13 @@ def apply_late_rows_transaction(student_id, late_rows):
         for late_row in sorted(late_rows, key=lambda row: (row["date"], row.get("timeEnd") or "")):
             if add_late_arrival(student, late_row):
                 late_added += 1
-                if should_assign_detention(student):
-                    scheduled_date = determine_detention_date(late_row)
-                    assign_detention(student, late_row, scheduled_date)
+                scheduled_date = determine_detention_date(late_row)
+                if add_detention_entry(student, late_row, scheduled_date):
                     detentions_assigned += 1
-            elif reconcile_active_detention_schedule(student, late_row):
-                detention_reconciled = True
+            else:
+                scheduled_date = determine_detention_date(late_row)
+                if add_detention_entry(student, late_row, scheduled_date):
+                    detentions_assigned += 1
 
         update_student_status(student)
         if late_added == 0 and detentions_assigned == 0 and not detention_reconciled and not student_identity_changed(original_student, student):
@@ -574,145 +690,6 @@ def apply_late_rows_transaction(student_id, late_rows):
         return late_added, detentions_assigned
 
     return _apply(transaction)
-
-
-def apply_pending_detention_transaction(student_id, attendance_day_record, report_date):
-    transaction = db.transaction()
-    student_ref = db.collection("students").document(student_id)
-
-    @firestore.transactional
-    def _apply(transaction_obj):
-        snapshot = next(transaction_obj.get(student_ref), None)
-        if not snapshot or not snapshot.exists:
-            return False
-
-        student = clone_student(snapshot.to_dict())
-        result = evaluate_pending_detention(student, attendance_day_record, report_date)
-        if not result:
-            return None
-
-        update_student_status(student)
-        apply_audit_fields(student, "backend_detention_attendance_evaluated", "backend_upload")
-        transaction_obj.set(student_ref, student)
-        return result
-
-    return _apply(transaction)
-
-
-def reconcile_student_detention_schedule_transaction(student_id):
-    transaction = db.transaction()
-    student_ref = db.collection("students").document(student_id)
-
-    @firestore.transactional
-    def _apply(transaction_obj):
-        snapshot = next(transaction_obj.get(student_ref), None)
-        if not snapshot or not snapshot.exists:
-            return False
-
-        student = clone_student(snapshot.to_dict())
-        if not reconcile_active_detention_from_history(student):
-            return False
-
-        update_student_status(student)
-        apply_audit_fields(student, "backend_detention_schedule_reconciled", "backend_upload")
-        transaction_obj.set(student_ref, student)
-        return True
-
-    return _apply(transaction)
-
-
-def count_pending_detention_checks(report_date=None):
-    pending_count = 0
-    for student_snapshot in db.collection("students").stream():
-        active_detention = student_snapshot.to_dict().get("activeDetention") or {}
-        pending_date = active_detention.get("pendingAttendanceCheckDate")
-        if pending_date and (report_date is None or pending_date == report_date):
-            pending_count += 1
-    return pending_count
-
-
-def summarize_pending_detention_check_dates():
-    pending_by_date = {}
-    for student_snapshot in db.collection("students").stream():
-        active_detention = student_snapshot.to_dict().get("activeDetention") or {}
-        pending_date = active_detention.get("pendingAttendanceCheckDate")
-        if pending_date:
-            pending_by_date[pending_date] = pending_by_date.get(pending_date, 0) + 1
-
-    return [
-        {"date": pending_date, "count": pending_by_date[pending_date]}
-        for pending_date in sorted(pending_by_date)
-    ]
-
-
-def get_pending_detention_check_candidates(full_coverage_dates):
-    full_coverage_date_set = set(full_coverage_dates)
-    if not full_coverage_date_set:
-        return []
-
-    candidates = []
-    for student_snapshot in db.collection("students").stream():
-        active_detention = student_snapshot.to_dict().get("activeDetention") or {}
-        pending_date = active_detention.get("pendingAttendanceCheckDate")
-        scheduled_date = active_detention.get("scheduledForDate")
-        if pending_date in full_coverage_date_set:
-            candidates.append((student_snapshot.id, pending_date))
-        elif scheduled_date in full_coverage_date_set:
-            candidates.append((student_snapshot.id, scheduled_date))
-
-    return candidates
-
-
-def process_detention_attendance_checks(attendance_day_records, full_coverage_dates):
-    full_coverage_date_set = set(full_coverage_dates)
-    stats = {
-        "completed": 0,
-        "missedWhilePresent": 0,
-        "notCountedAbsenceRecorded": 0,
-        "rolledForward": 0,
-        "markedPending": 0,
-        "matched": 0,
-        "passes": 0,
-    }
-    max_passes = max(1, len(full_coverage_dates) + 5)
-
-    for _ in range(max_passes):
-        candidates = get_pending_detention_check_candidates(full_coverage_date_set)
-        stats["matched"] += len(candidates)
-        stats["passes"] += 1
-        changed_this_pass = 0
-
-        for student_id, attendance_date in candidates:
-            attendance_day_record = get_attendance_day_record_for_pending_check(
-                attendance_day_records,
-                full_coverage_date_set,
-                student_id,
-                attendance_date
-            )
-            result = apply_pending_detention_transaction(
-                student_id,
-                attendance_day_record,
-                attendance_date
-            )
-            if not result:
-                continue
-
-            changed_this_pass += 1
-            if result.get("completed"):
-                stats["completed"] += 1
-            if result.get("missedWhilePresent"):
-                stats["missedWhilePresent"] += 1
-            if result.get("notCountedAbsenceRecorded"):
-                stats["notCountedAbsenceRecorded"] += 1
-            if result.get("rolledForward"):
-                stats["rolledForward"] += 1
-            if result.get("markedPending"):
-                stats["markedPending"] += 1
-
-        if changed_this_pass == 0:
-            break
-
-    return stats
 
 
 def apply_audit_fields(student, action, actor):
@@ -732,183 +709,51 @@ def student_identity_changed(original_student, updated_student):
     return False
 
 
-def should_assign_detention(student):
-    active_detention = student.get("activeDetention")
-    return not active_detention or active_detention.get("status") != "open"
-
-
-def assign_detention(student, late_row, scheduled_date):
-    student["activeDetention"] = {
-        "status": "open",
-        "createdFromLateDate": late_row["date"],
-        "scheduledForDate": scheduled_date,
-        "sourceContext": build_detention_source_context(late_row, scheduled_date),
-        "createdAt": datetime.now(SYDNEY_TZ).isoformat(),
-        "lastRollMark": None,
-        "lastRollMarkedAt": None,
-        "pendingAttendanceCheckDate": None,
-        "missedWhilePresentCount": 0,
-    }
-
-
-def reconcile_active_detention_schedule(student, late_row):
-    active_detention = student.get("activeDetention")
-    if not active_detention or active_detention.get("status") != "open":
-        return False
-
-    if active_detention.get("pendingAttendanceCheckDate"):
-        return False
-
-    if active_detention.get("createdFromLateDate") != late_row["date"]:
-        return False
-
-    corrected_date = determine_detention_date(late_row)
-    corrected_context = build_detention_source_context(late_row, corrected_date)
-    if (
-        active_detention.get("scheduledForDate") == corrected_date
-        and active_detention.get("sourceContext") == corrected_context
-    ):
-        return False
-
-    active_detention["scheduledForDate"] = corrected_date
-    active_detention["sourceContext"] = corrected_context
-    student["activeDetention"] = active_detention
-    return True
-
-
-def reconcile_active_detention_from_history(student):
-    active_detention = student.get("activeDetention")
-    if not active_detention or active_detention.get("status") != "open":
-        return False
-
-    late_date = active_detention.get("createdFromLateDate")
-    if not late_date:
-        return False
-
-    matching_late = next(
-        (entry for entry in student.get("lateArrivals", []) if entry.get("date") == late_date),
-        None
-    )
-    if not matching_late:
-        return False
-
-    corrected_date = determine_detention_date_from_late_record(late_date, matching_late)
-    corrected_context = build_detention_source_context({"date": late_date}, corrected_date)
-    changed = False
-
-    if active_detention.get("scheduledForDate") != corrected_date:
-        active_detention["scheduledForDate"] = corrected_date
-        changed = True
-
-    if active_detention.get("sourceContext") != corrected_context:
-        active_detention["sourceContext"] = corrected_context
-        changed = True
-
-    if changed:
-        student["activeDetention"] = active_detention
-
-    return changed
-
-
-def evaluate_pending_detention(student, attendance_day_record, report_date):
-    active_detention = student.get("activeDetention")
-    if not active_detention or active_detention.get("status") != "open":
-        return None
-
-    pending_date = active_detention.get("pendingAttendanceCheckDate")
-    scheduled_date = active_detention.get("scheduledForDate")
-    if report_date not in {pending_date, scheduled_date}:
-        return None
-
-    if not attendance_day_record or not attendance_day_record.get("hasFullDayCoverage"):
-        if scheduled_date == report_date and not pending_date:
-            active_detention["pendingAttendanceCheckDate"] = report_date
-            student["activeDetention"] = active_detention
-            return {
-                "completed": False,
-                "missedWhilePresent": False,
-                "notCountedAbsenceRecorded": False,
-                "rolledForward": False,
-                "markedPending": True,
-            }
-        return None
-
-    row_count = attendance_day_record.get("rowCount", 0)
-    present_during_detention = row_count == 0
-    evidence = (
-        "no_absence_row_full_day_coverage"
-        if present_during_detention
-        else "absence_row_recorded_not_counted"
-    )
-
-    active_detention["lastEvaluatedDate"] = report_date
-    active_detention["pendingAttendanceCheckDate"] = None
-
-    if present_during_detention:
-        student.setdefault("detentionHistory", []).append({
-            "date": report_date,
-            "lateDate": active_detention.get("createdFromLateDate"),
-            "scheduledForDate": active_detention.get("scheduledForDate") or report_date,
-            "outcome": "missed_while_present",
-            "attendanceEvidence": evidence,
-            "attendanceDayRowCount": row_count,
-        })
-    else:
-        student.setdefault("detentionHistory", []).append({
-            "date": report_date,
-            "lateDate": active_detention.get("createdFromLateDate"),
-            "scheduledForDate": active_detention.get("scheduledForDate") or report_date,
-            "outcome": "not_counted_absence_recorded",
-            "attendanceEvidence": evidence,
-            "attendanceDayRowCount": row_count,
-        })
-
-    active_detention["scheduledForDate"] = next_school_day(report_date)
-    active_detention["missedWhilePresentCount"] = count_current_missed_while_present(student, active_detention)
-    student["activeDetention"] = active_detention
-    return {
-        "completed": True,
-        "missedWhilePresent": present_during_detention,
-        "notCountedAbsenceRecorded": not present_during_detention,
-        "rolledForward": True,
-        "markedPending": False,
-    }
-
-
 def update_student_status(student):
-    active_detention = student.get("activeDetention") or {}
-    active_detention_open = active_detention.get("status") == "open"
-    student["activeDetention"] = active_detention if active_detention_open else None
+    detentions = sanitize_detentions(student.get("detentions", []))
+    served_events = sanitize_detention_served_events(student.get("detentionServedEvents", []))
+    student["detentions"] = detentions
+    student["detentionServedEvents"] = served_events
+    student["detentionStatus"] = build_detention_status(detentions, served_events)
+    student["activeDetention"] = None
 
 
-def count_current_missed_while_present(student, active_detention):
-    if not active_detention or active_detention.get("status") != "open":
-        return 0
+def build_detention_status(detentions, served_events):
+    latest_served_date = get_latest_served_date(served_events)
+    outstanding = [
+        detention for detention in detentions
+        if detention_is_outstanding(detention, latest_served_date)
+    ]
+    outstanding_dates = sorted(
+        detention.get("originalScheduledForDate")
+        for detention in outstanding
+        if detention.get("originalScheduledForDate")
+    )
+    return {
+        "hasOpenDetention": bool(outstanding),
+        "outstandingCount": len(outstanding),
+        "latestServedDate": latest_served_date,
+        "oldestOutstandingDetentionDate": outstanding_dates[0] if outstanding_dates else None,
+        "newestOutstandingDetentionDate": outstanding_dates[-1] if outstanding_dates else None,
+    }
 
-    history = student.get("detentionHistory", [])
-    if not isinstance(history, list):
-        history = []
 
-    most_recent_served_index = -1
-    for index in range(len(history) - 1, -1, -1):
-        entry = history[index] if isinstance(history[index], dict) else {}
-        if entry.get("outcome") == "served":
-            most_recent_served_index = index
-            break
+def get_latest_served_date(served_events):
+    served_dates = [
+        event.get("servedDate")
+        for event in served_events
+        if isinstance(event, dict) and event.get("servedDate")
+    ]
+    return max(served_dates) if served_dates else None
 
-    unresolved_history = history[most_recent_served_index + 1:]
-    active_late_date = active_detention.get("createdFromLateDate") or ""
-    history_count = 0
-    for entry in unresolved_history:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("outcome") != "missed_while_present":
-            continue
-        if active_late_date and entry.get("lateDate") and entry.get("lateDate") != active_late_date:
-            continue
-        history_count += 1
 
-    return history_count
+def detention_is_outstanding(detention, latest_served_date):
+    scheduled_date = detention.get("originalScheduledForDate")
+    if not scheduled_date:
+        return False
+    if not latest_served_date:
+        return True
+    return scheduled_date > latest_served_date
 
 
 def write_students(changed_students):
@@ -963,25 +808,6 @@ def get_full_coverage_dates(attendance_day_records):
         for record in attendance_day_records.values()
         if record.get("hasFullDayCoverage")
     })
-
-
-def get_attendance_day_record_for_pending_check(
-    attendance_day_records,
-    full_coverage_date_set,
-    student_id,
-    attendance_date
-):
-    attendance_day_record = attendance_day_records.get((student_id, attendance_date))
-    if attendance_date not in full_coverage_date_set:
-        return attendance_day_record
-
-    if attendance_day_record:
-        return {
-            **attendance_day_record,
-            "hasFullDayCoverage": True,
-        }
-
-    return build_present_attendance_day_record(student_id, attendance_date)
 
 
 def write_attendance_day_records(attendance_day_records):
@@ -1167,20 +993,6 @@ def determine_detention_date(late_row):
         return next_school_day(late_date)
 
     arrival_dt = parse_time_value(late_row.get("timeEnd"))
-    if not arrival_dt:
-        return next_school_day(late_date)
-
-    if arrival_dt.time() < first_break_start_for_date(late_date):
-        return late_date
-
-    return next_school_day(late_date)
-
-
-def determine_detention_date_from_late_record(late_date, late_record):
-    if is_tuesday(late_date):
-        return next_school_day(late_date)
-
-    arrival_dt = parse_time_value(late_record.get("arrivalTime"))
     if not arrival_dt:
         return next_school_day(late_date)
 

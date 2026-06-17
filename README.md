@@ -152,8 +152,9 @@ Success response:
   "status": "success",
   "added": 12,
   "detentionsAssigned": 4,
-  "detentionChecksCompleted": 3,
-  "missedDetentionsConfirmed": 2,
+  "reportDate": "2026-04-02",
+  "coversFullDay": true,
+  "latestObservedTime": "03:05PM",
   "uploadMode": "late_arrivals"
 }
 ```
@@ -277,17 +278,17 @@ If time parsing fails, `arrivalTime` and `minutesLate` remain `None`.
 
 The upload route supports two modes:
 
-- `late_arrivals`: normal morning workflow. Records late arrivals, assigns/reconciles detentions, writes attendance-day records, and resolves any detention checks supported by the uploaded data.
-- `attendance_confirmation`: confirmation workflow. Writes attendance-day records and resolves missed detention checks, but does not add late arrivals or assign new detentions.
+- `late_arrivals`: normal morning workflow. Records late arrivals, creates detention ledger entries, and writes attendance-day records.
+- `attendance_confirmation`: confirmation workflow. Writes attendance-day records, but does not add late arrivals, create detentions, or resolve detention debt.
 
 Repeated uploads are allowed:
 
 - a student can be uploaded multiple times on the same date without creating duplicate late records
-- only one active detention is allowed at a time
+- each unexplained late arrival can create one detention ledger entry
 - same-day versus next-day detention is decided from the student arrival time in the spreadsheet
 - repeated `late_arrivals` uploads for the same report date can add new late arrivals discovered later in the day
-- `attendance_confirmation` uploads can contain full-day or weekly data and can catch up open detention checks across uploaded dates
-- detention absences marked on the roll stay pending until an upload for that detention date has enough coverage to resolve whether the student attended school
+- `attendance_confirmation` uploads can contain full-day or weekly data for attendance evidence
+- detention debt is resolved only by the detention roll writing served events
 
 Scheduling rule:
 
@@ -311,7 +312,10 @@ When a new student is first seen, the backend creates a document with fields lik
 - `lateCount`
 - `detentionsServed`
 - `detentionHistory`
-- `activeDetention`
+- `detentions`
+- `detentionServedEvents`
+- `detentionStatus`
+- `activeDetention` set to `null` for compatibility with older records/pages
 - `notes`
 
 Each late-arrival record includes:
@@ -341,14 +345,16 @@ This is a simple duplicate rule. If multiple distinct late-arrival records can h
 
 ## Resolution Logic
 
-The app resolves current status from the student's live detention state.
+The app resolves current status from the student's detention ledger.
 
 Current rules:
 
-- if `activeDetention.status == "open"`, the student is treated as unresolved
-- if there is no open active detention, the student is treated as resolved
+- each unexplained late arrival creates one `detentions` entry with an `originalScheduledForDate`
+- each served detention creates one `detentionServedEvents` entry with a `servedDate`
+- the latest served date resolves every detention entry due on or before that date
+- any detention entry due after the latest served date remains outstanding
 
-The backend normalizes `activeDetention` after upload and detention-attendance processing. The frontend derives resolved/pending display state from that field.
+The backend stores `detentionStatus` as a summary cache, but the source of truth is the combination of `detentions` and `detentionServedEvents`. Legacy open `activeDetention` values are migrated into the ledger when a student document is next rewritten.
 
 ## Local Development
 
